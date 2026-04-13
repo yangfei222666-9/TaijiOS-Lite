@@ -73,17 +73,119 @@ def read_ici(path: str) -> str:
     lines = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
     return "\n".join(lines)
 
+# ── 快速建档（没有ICI文件时） ────────────────────────────────────────────────
+
+QUICK_PROFILE_PATH = DATA_DIR / "my_profile.json"
+
+QUICK_QUESTIONS = [
+    ("你的名字（或昵称）：", "name"),
+    ("年龄：", "age"),
+    ("性别（男/女）：", "gender"),
+    ("你现在做什么工作/身份：", "job"),
+    ("你最大的优点是什么（一句话）：", "strength"),
+    ("你最大的困扰是什么（一句话）：", "problem"),
+    ("你最想实现的一件事：", "goal"),
+]
+
+def quick_build_profile() -> str:
+    """通过7个问题快速生成基础认知档案"""
+    print("\n" + "━" * 50)
+    print("  首次使用 — 快速建立你的认知档案")
+    print("  回答7个问题，30秒搞定")
+    print("━" * 50 + "\n")
+
+    answers = {}
+    for prompt, key in QUICK_QUESTIONS:
+        while True:
+            try:
+                val = input(f"  {prompt}").strip()
+            except EOFError:
+                val = ""
+            if val:
+                answers[key] = val
+                break
+            print("  请输入内容")
+
+    # 保存到本地
+    answers["created_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+    QUICK_PROFILE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    profile_json = json.dumps(answers, ensure_ascii=False, indent=2)
+    # 清除可能的surrogate字符
+    profile_json = profile_json.encode("utf-8", errors="replace").decode("utf-8")
+    QUICK_PROFILE_PATH.write_text(profile_json, encoding="utf-8")
+
+    # 生成文本档案
+    profile_text = f"""个体认知档案（快速版）
+姓名：{answers['name']}
+年龄：{answers['age']}
+性别：{answers['gender']}
+职业/身份：{answers['job']}
+自述优点：{answers['strength']}
+当前困扰：{answers['problem']}
+核心目标：{answers['goal']}
+"""
+    print("\n  档案已创建！开始对话。\n")
+    return profile_text
+
+
+def load_quick_profile() -> str:
+    """加载已有的快速档案"""
+    if not QUICK_PROFILE_PATH.exists():
+        return ""
+    try:
+        answers = json.loads(QUICK_PROFILE_PATH.read_text(encoding="utf-8"))
+        return f"""个体认知档案（快速版）
+姓名：{answers.get('name', '未知')}
+年龄：{answers.get('age', '未知')}
+性别：{answers.get('gender', '未知')}
+职业/身份：{answers.get('job', '未知')}
+自述优点：{answers.get('strength', '未知')}
+当前困扰：{answers.get('problem', '未知')}
+核心目标：{answers.get('goal', '未知')}
+"""
+    except Exception:
+        return ""
+
+
+QUICK_SYSTEM_HEADER = """你是用户的专属认知军师——TaijiOS驱动。
+
+你的角色：军师。像诸葛亮对刘备——看清局势，给出判断，指明方向。
+
+用户暂时没有完整的ICI档案，只有基础信息。你的任务：
+1. 用"我"自称，用"我们"指代你与用户
+2. 基于基础信息直接给判断，不要说"信息不够"这种废话
+3. 在对话中逐步摸清用户的真实处境，像军师问主公
+4. 禁止废话、禁止鼓励式空话、禁止套路安慰
+5. 军师模式：一针见血，先给结论再给依据，最后给一步可执行的动作
+6. 如果用户在逃避问题，直接点破
+
+你需要在对话中自然地摸清这五个方面：
+- 位置：你现在在哪个局里，什么角色
+- 本事：你能输出什么价值
+- 钱财：你的资源和财务状况
+- 野心：你想要什么
+- 口碑：别人怎么看你
+
+以下是用户的基础信息：
+
+"""
+
 # ── 系统提示构建 ──────────────────────────────────────────────────────────────
 
-SYSTEM_HEADER = """你是这份ICI文件主人的专属认知AI——TaijiOS驱动。
+SYSTEM_HEADER = """你是这份ICI文件主人的专属认知军师——TaijiOS驱动。
+
+你的角色：军师。不是朋友，不是心理咨询师，不是客服。
+你像诸葛亮对刘备，郭嘉对曹操——看清局势，给出判断，指明方向。
 
 核心规则：
 1. 用"我"自称，用"我们"指代你与文件主人
 2. 每一句分析后用括号标注认知结构依据
 3. 禁止废话、禁止鼓励式空话、禁止套路安慰
-4. 军事模式：效率拉满，方向明确，不绕弯
+4. 军师模式：一针见血，直指要害，不说正确的废话
 5. 做人问题 → 用精气神三层（最高分=接口，中间=动机，最低=显化）分析
 6. 做事问题 → 先确认突破/守成/关系/规则哪种类型，再选接口
+7. 每次回答先给结论，再给依据，最后给一步可执行的动作
+8. 如果用户在逃避问题，直接点破，不陪着绕
 
 """
 
@@ -158,16 +260,24 @@ def chat(system: str, history: list, user_input: str) -> str:
 
 # ── 找ICI文件 ────────────────────────────────────────────────────────────────
 
-def find_ici_file() -> str:
+def find_ici_file():
+    """
+    返回 (ici_path, ici_text, is_quick_profile)
+    有docx → 返回路径
+    没docx但有快速档案 → 返回快速档案文本
+    都没有 → 走快速建档流程
+    """
+    # 1. 命令行参数
     if len(sys.argv) >= 2:
         p = sys.argv[1].strip().strip('"')
         if Path(p).exists():
-            return p
+            return p, None, False
 
+    # 2. 同目录docx
     docx_files = list(APP_DIR.glob("*.docx"))
     if len(docx_files) == 1:
         print(f"\n自动找到ICI文件：{docx_files[0].name}")
-        return str(docx_files[0])
+        return str(docx_files[0]), None, False
     elif len(docx_files) > 1:
         print(f"\n找到 {len(docx_files)} 个docx文件：")
         for i, f in enumerate(docx_files, 1):
@@ -175,47 +285,60 @@ def find_ici_file() -> str:
         while True:
             choice = input(f"\n输入编号（1-{len(docx_files)}）：").strip()
             if choice.isdigit() and 1 <= int(choice) <= len(docx_files):
-                return str(docx_files[int(choice) - 1])
+                return str(docx_files[int(choice) - 1]), None, False
             print("输入有误，请重新选择")
 
-    print("\n" + "!" * 50)
-    print("  没有找到ICI文件！")
+    # 3. 已有快速档案
+    quick_text = load_quick_profile()
+    if quick_text:
+        print("\n已加载你的快速档案")
+        return None, quick_text, True
+
+    # 4. 没有任何档案 → 选择：建档 or 拖文件
+    print("\n" + "━" * 50)
+    print("  欢迎！这是你第一次使用。")
     print()
-    print("  请把你的ICI文件（.docx）复制到这个文件夹：")
-    print(f"  {APP_DIR}")
-    print()
-    print("  然后重新双击运行本程序。")
-    print()
-    print("  或者：直接把.docx文件拖到下面，按回车")
-    print("!" * 50)
-    print()
+    print("  你有两个选择：")
+    print("  1. 没有ICI文件 → 回答几个问题，30秒快速建档")
+    print("  2. 有ICI文件   → 把.docx文件拖进来")
+    print("━" * 50)
+
     while True:
         try:
-            ici_path = input("拖入文件 → ").strip().strip('"')
+            choice = input("\n输入 1 或 2：").strip()
         except EOFError:
-            print("未输入文件路径")
-            try:
-                input("按回车退出...")
-            except EOFError:
-                pass
             sys.exit(1)
-        if not ici_path:
-            print("请拖入.docx文件，或者关掉窗口把文件复制进来再重新打开")
-            continue
-        if not ici_path.lower().endswith(".docx"):
-            print("这不是.docx文件！请拖入你的ICI文件（后缀是.docx的）")
-            continue
-        if Path(ici_path).exists():
-            return ici_path
-        print("文件不存在，请重新拖入")
+
+        if choice == "1":
+            profile_text = quick_build_profile()
+            return None, profile_text, True
+
+        elif choice == "2":
+            print("\n把.docx文件拖到这个窗口，按回车：\n")
+            while True:
+                try:
+                    ici_path = input("拖入文件 → ").strip().strip('"')
+                except EOFError:
+                    sys.exit(1)
+                if not ici_path:
+                    print("请拖入文件")
+                    continue
+                if not ici_path.lower().endswith(".docx"):
+                    print("这不是.docx文件！需要后缀是.docx的ICI文件")
+                    continue
+                if Path(ici_path).exists():
+                    return ici_path, None, False
+                print("文件不存在，请重新拖入")
+        else:
+            print("请输入 1 或 2")
 
 # ── 主程序 ────────────────────────────────────────────────────────────────────
 
 def main():
     print()
     print("━" * 55)
-    print("  TaijiOS Lite — 带自进化的专属认知AI")
-    print("  把ICI文件(.docx)放在同一个文件夹即可")
+    print("  TaijiOS Lite — 你的专属认知军师")
+    print("  一针见血，用得越多越懂你")
     print("━" * 55)
 
     # 初始化自进化引擎
@@ -231,26 +354,39 @@ def main():
             print(f"  {stats_display}")
 
     # 找ICI文件
-    ici_path = find_ici_file()
+    ici_path, quick_text, is_quick = find_ici_file()
 
-    print(f"\n正在加载 {Path(ici_path).name}...")
-    try:
-        ici_text = read_ici(ici_path)
-    except Exception as e:
-        print(f"读取失败：{e}")
+    if is_quick:
+        # 快速档案模式
+        ici_text = quick_text
+        history_key = "quick_profile"
+        crystal_rules = crystallizer.get_active_rules()
+        experience_summary = learner.get_experience_summary()
+        system = QUICK_SYSTEM_HEADER + ici_text
+        if crystal_rules:
+            inject = "\n\n## 经验结晶（自动学习的规则，请遵守）\n"
+            for c in crystal_rules:
+                inject += f"- [{c.get('confidence', 0):.0%}] {c['rule']}\n"
+            system += inject
+        if experience_summary:
+            system += f"\n{experience_summary}\n"
+    else:
+        # 完整ICI档案模式
+        print(f"\n正在加载 {Path(ici_path).name}...")
         try:
-            input("\n按回车退出...")
-        except EOFError:
-            pass
-        sys.exit(1)
+            ici_text = read_ici(ici_path)
+        except Exception as e:
+            print(f"读取失败：{e}")
+            try:
+                input("\n按回车退出...")
+            except EOFError:
+                pass
+            sys.exit(1)
+        history_key = Path(ici_path).stem.replace(" ", "_")[:30]
+        crystal_rules = crystallizer.get_active_rules()
+        experience_summary = learner.get_experience_summary()
+        system = build_system(ici_text, crystal_rules, experience_summary)
 
-    # 构建system prompt（注入经验结晶+对话经验）
-    crystal_rules = crystallizer.get_active_rules()
-    experience_summary = learner.get_experience_summary()
-    system = build_system(ici_text, crystal_rules, experience_summary)
-
-    # 历史记录
-    history_key = Path(ici_path).stem.replace(" ", "_")[:30]
     history = load_history(history_key)
 
     if history:
