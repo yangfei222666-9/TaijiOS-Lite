@@ -149,6 +149,14 @@ class ConversationLearner:
         except Exception:
             return {"total": 0, "positive": 0, "negative": 0}
 
+    def get_positive_rate(self) -> float:
+        """获取满意率（供卦象引擎使用）"""
+        stats = self._load_stats()
+        total = stats.get("total", 0)
+        if total == 0:
+            return 0.5
+        return stats.get("positive", 0) / max(total, 1)
+
     def get_stats_display(self) -> str:
         """获取可展示的统计信息"""
         stats = self._load_stats()
