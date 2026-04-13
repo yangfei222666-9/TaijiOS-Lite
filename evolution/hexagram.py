@@ -189,28 +189,20 @@ class HexagramEngine:
                 return "观"
 
     def _load_state(self):
-        if not os.path.exists(self.state_path):
-            return
-        try:
-            with open(self.state_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
+        from .safe_io import safe_json_load
+        data = safe_json_load(self.state_path, None)
+        if data:
             self.current_lines = data.get("lines", self.current_lines)
             self.current_hexagram = data.get("hexagram", self.current_hexagram)
-        except Exception:
-            pass
 
     def _save_state(self):
-        os.makedirs(os.path.dirname(self.state_path) or ".", exist_ok=True)
+        from .safe_io import safe_json_save
         data = {
             "lines": self.current_lines,
             "hexagram": self.current_hexagram,
             "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         }
-        try:
-            with open(self.state_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-        except Exception:
-            pass
+        safe_json_save(self.state_path, data)
 
     def _log_history(self):
         entry = {

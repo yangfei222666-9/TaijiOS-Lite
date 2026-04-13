@@ -16,7 +16,7 @@ TaijiOS Lite — 带自进化的ICI认知AI
 用法：把ICI文件(.docx)放在同一个文件夹，双击运行
 """
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 
 import sys
 import os
@@ -64,6 +64,8 @@ from evolution.hexagram import HexagramEngine
 from evolution.agi_core import CognitiveMap
 from evolution.experience_pool import ExperiencePool
 from evolution.premium import PremiumManager
+from evolution.contribution import ContributionSystem
+from evolution.ecosystem import EcosystemManager
 
 # ── 配置 ─────────────────────────────────────────────────────────────────────
 
@@ -200,40 +202,49 @@ SYSTEM_HEADER = """你是这份ICI文件主人的专属认知军师——TaijiOS
 
 """
 
-def build_system(ici_text: str, crystal_rules: list = None,
-                 experience_summary: str = "",
-                 hexagram_prompt: str = "",
-                 cognitive_prompt: str = "",
-                 shared_prompt: str = "") -> str:
-    parts = [SYSTEM_HEADER]
-
-    # 注入卦象策略（当前状态诊断）
+def _build_injections(crystal_rules, hexagram_prompt, cognitive_prompt,
+                      shared_prompt, experience_summary) -> str:
+    """统一构建注入内容（卦象+认知+结晶+共享+经验），只写一次"""
+    parts = []
     if hexagram_prompt:
         parts.append(hexagram_prompt)
-
-    # 注入认知地图（跨对话积累的用户认知）
     if cognitive_prompt:
         parts.append(cognitive_prompt)
-
-    # 注入经验结晶
     if crystal_rules:
         parts.append("\n## 经验结晶（自动学习的规则，请遵守）\n")
         for c in crystal_rules:
             conf = c.get("confidence", 0)
             parts.append(f"- [{conf:.0%}] {c['rule']}")
         parts.append("")
-
-    # 注入共享经验
     if shared_prompt:
         parts.append(shared_prompt)
-
-    # 注入对话经验
     if experience_summary:
         parts.append(f"\n{experience_summary}\n")
-
-    parts.append("以下是完整ICI档案：\n")
-    parts.append(ici_text)
     return "\n".join(parts)
+
+
+def build_system(ici_text: str, crystal_rules: list = None,
+                 experience_summary: str = "",
+                 hexagram_prompt: str = "",
+                 cognitive_prompt: str = "",
+                 shared_prompt: str = "") -> str:
+    """完整ICI档案模式的system prompt"""
+    inject = _build_injections(crystal_rules, hexagram_prompt,
+                               cognitive_prompt, shared_prompt,
+                               experience_summary)
+    return SYSTEM_HEADER + inject + "\n以下是完整ICI档案：\n" + ici_text
+
+
+def build_quick_system(ici_text: str, crystal_rules: list = None,
+                       experience_summary: str = "",
+                       hexagram_prompt: str = "",
+                       cognitive_prompt: str = "",
+                       shared_prompt: str = "") -> str:
+    """快速档案模式的system prompt"""
+    inject = _build_injections(crystal_rules, hexagram_prompt,
+                               cognitive_prompt, shared_prompt,
+                               experience_summary)
+    return QUICK_SYSTEM_HEADER + ici_text + inject
 
 # ── 历史记录 ──────────────────────────────────────────────────────────────────
 
@@ -536,13 +547,27 @@ def chat(system: str, history: list, user_input: str,
         {"role": "user", "content": user_input}
     ]
 
-    resp = client.chat.completions.create(
-        model=model_config["model"],
-        messages=messages,
-        max_tokens=1500,
-        temperature=0.6,
-    )
-    return resp.choices[0].message.content
+    # 自动重试一次（处理网络抖动/临时超时）
+    last_err = None
+    for attempt in range(2):
+        try:
+            resp = client.chat.completions.create(
+                model=model_config["model"],
+                messages=messages,
+                max_tokens=1500,
+                temperature=0.6,
+            )
+            return resp.choices[0].message.content
+        except Exception as e:
+            last_err = e
+            if attempt == 0:
+                err_str = str(e).lower()
+                # 只对可能恢复的错误重试（超时/网络/限流）
+                if any(kw in err_str for kw in ["timeout", "connect", "rate", "429", "503"]):
+                    time.sleep(2)
+                    continue
+            raise last_err
+    raise last_err
 
 # ── 找ICI文件 ────────────────────────────────────────────────────────────────
 
@@ -626,7 +651,7 @@ def main():
     print("━" * 55)
     print(f"  TaijiOS Lite v{VERSION}")
     print("  你的专属认知军师 — 诸葛亮级别的")
-    print("  一针见血，越用越懂你，用久了比你更了解你自己")
+    print("  一针见血，越用越懂你，每个Agent互相学习进化")
     print("━" * 55)
 
     # 初始化自进化引擎（五引擎并行）
@@ -636,6 +661,22 @@ def main():
     cognitive_map = CognitiveMap(str(EVOLUTION_DIR))
     experience_pool = ExperiencePool(str(EVOLUTION_DIR))
     premium = PremiumManager(str(EVOLUTION_DIR))
+    contribution = ContributionSystem(str(EVOLUTION_DIR))
+    ecosystem = EcosystemManager(str(EVOLUTION_DIR))
+
+    # 每日签到
+    daily_bonus = contribution.check_daily_bonus()
+    if daily_bonus > 0:
+        print(f"\n  签到成功！+{daily_bonus}积分")
+
+    # 同步生态数据
+    ecosystem.update_streak(contribution.data.get("streak", 0))
+    ecosystem.register_agent(contribution.get_contributor_id(), {
+        "crystals": len(crystallizer.get_active_rules()),
+        "shared_rules": len(experience_pool.get_shared_rules()),
+        "points": contribution.total_points,
+        "level": contribution.level[0],
+    })
 
     # 配置AI模型
     model_config = ensure_model_config()
@@ -653,36 +694,32 @@ def main():
     stats_display = learner.get_stats_display()
     premium_tag = "Premium" if premium.is_premium else "免费版"
     model_name = model_config.get("provider", "未知")
-    print(f"\n  [{premium_tag}] {model_name} | {crystal_count}条结晶 | {shared_count}条共享经验")
+    level_name = contribution.level[0]
+    print(f"\n  [{premium_tag}] {model_name} | {level_name} | {contribution.total_points}积分")
+    print(f"  {crystal_count}条结晶 | {shared_count}条共享经验")
     if stats_display:
         print(f"  {stats_display}")
 
     # 找ICI文件
     ici_path, quick_text, is_quick = find_ici_file()
 
+    def rebuild_system():
+        """重建system prompt（统一入口，每轮调用）"""
+        cr = crystallizer.get_active_rules()
+        es = learner.get_experience_summary()
+        hp = hexagram_engine.get_strategy_prompt()
+        cp = cognitive_map.get_map_summary()
+        sp = experience_pool.get_shared_prompt()
+        if is_quick:
+            return build_quick_system(ici_text, cr, es, hp, cp, sp)
+        else:
+            return build_system(ici_text, cr, es, hp, cp, sp)
+
     if is_quick:
         # 快速档案模式
         ici_text = quick_text
         history_key = "quick_profile"
-        crystal_rules = crystallizer.get_active_rules()
-        experience_summary = learner.get_experience_summary()
-        hexagram_prompt = hexagram_engine.get_strategy_prompt()
-        cognitive_prompt = cognitive_map.get_map_summary()
-        shared_prompt = experience_pool.get_shared_prompt()
-        system = QUICK_SYSTEM_HEADER + ici_text
-        if hexagram_prompt:
-            system += hexagram_prompt
-        if cognitive_prompt:
-            system += cognitive_prompt
-        if crystal_rules:
-            inject = "\n\n## 经验结晶（自动学习的规则，请遵守）\n"
-            for c in crystal_rules:
-                inject += f"- [{c.get('confidence', 0):.0%}] {c['rule']}\n"
-            system += inject
-        if shared_prompt:
-            system += shared_prompt
-        if experience_summary:
-            system += f"\n{experience_summary}\n"
+        system = rebuild_system()
     else:
         # 完整ICI档案模式
         print(f"\n正在加载 {Path(ici_path).name}...")
@@ -696,13 +733,7 @@ def main():
                 pass
             sys.exit(1)
         history_key = Path(ici_path).stem.replace(" ", "_")[:30]
-        crystal_rules = crystallizer.get_active_rules()
-        experience_summary = learner.get_experience_summary()
-        hexagram_prompt = hexagram_engine.get_strategy_prompt()
-        cognitive_prompt = cognitive_map.get_map_summary()
-        shared_prompt = experience_pool.get_shared_prompt()
-        system = build_system(ici_text, crystal_rules, experience_summary,
-                              hexagram_prompt, cognitive_prompt, shared_prompt)
+        system = rebuild_system()
 
     history = load_history(history_key)
 
@@ -760,12 +791,14 @@ def main():
     model       查看/切换AI模型
 
   进化系统：
-    export      导出你的经验（发给朋友）
+    export      导出你的经验（发给其他Agent）
     import      导入别人的经验
     share       生成分享卡片（发朋友圈）
     yijing      易经课堂（解读你当前的卦象）
+    ecosystem   查看生态制度（智能体网络）
 
   账户：
+    points      查看积分明细和等级
     upgrade     查看Premium功能
     activate    输入激活码升级
     reset       重建个人档案
@@ -828,6 +861,8 @@ def main():
 
             print(card)
             print("\n  复制上面的内容发朋友圈/群聊")
+            contribution.add_points("share")
+            ecosystem.record_action("share")
             continue
 
         if user_input.lower() in ("yijing", "易经", "卦象"):
@@ -867,6 +902,23 @@ def main():
 
   当前阳爻{sum(lines)}个 / 阴爻{6-sum(lines)}个
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━""")
+            contribution.add_points("yijing")
+            ecosystem.record_action("yijing")
+            # 检查成就
+            new_achievements = ecosystem.check_achievements(ecosystem.get_stats())
+            for a in new_achievements:
+                print(f"\n  ★ 成就解锁：{a['name']} — {a['desc']}（+{a['points']}分）")
+                contribution.add_points("chat", a["points"])  # 成就奖励积分
+            continue
+
+        if user_input.lower() in ("ecosystem", "生态", "生态制度", "网络"):
+            ecosystem.record_action("view_ecosystem")
+            print(ecosystem.get_ecosystem_display(contribution.total_points))
+            # 检查成就
+            new_achievements = ecosystem.check_achievements(ecosystem.get_stats())
+            for a in new_achievements:
+                print(f"\n  ★ 成就解锁：{a['name']} — {a['desc']}（+{a['points']}分）")
+                contribution.add_points("chat", a["points"])
             continue
 
         if user_input.lower() in ("invite", "邀请"):
@@ -926,12 +978,34 @@ def main():
             pool_display = experience_pool.get_display()
             if pool_display:
                 print(pool_display)
+            # 贡献积分
+            print(contribution.get_display())
+            # 生态角色
+            print(ecosystem.get_brief_display(contribution.total_points))
             # 对话统计
             if stats:
                 print(f"  {stats}")
             else:
                 print("  暂无对话统计")
             print(f"{'━' * 40}")
+            continue
+
+        if user_input.lower() in ("points", "积分"):
+            print(f"\n{'━' * 40}")
+            print(contribution.get_display())
+            print()
+            print(contribution.get_points_breakdown())
+            print(f"""
+  积分获取方式：
+    对话      每轮 +1
+    结晶      每条 +10
+    导出经验  每次 +20
+    被人导入  每人 +30
+    导入经验  每次 +5
+    易经课堂  每次 +2
+    分享卡片  每次 +3
+    每日签到  连续天数 × 5
+{'━' * 40}""")
             continue
 
         if user_input.lower() in ("upgrade", "升级"):
@@ -964,10 +1038,35 @@ def main():
                 print("\n还没有经验结晶可导出，多聊几轮再来")
                 continue
             export_file = str(APP_DIR / "my_experience.taiji")
-            result = experience_pool.export_crystals(rules_to_export, export_file)
+            # v2: 携带易经卦象 + 灵魂认知数据
+            from evolution.hexagram import HEXAGRAM_STRATEGIES
+            hex_name = hexagram_engine.current_hexagram
+            hex_lines = hexagram_engine.current_lines
+            strat = HEXAGRAM_STRATEGIES.get(hex_name, {})
+            hexagram_export = {
+                "hexagram": hex_name,
+                "lines": hex_lines,
+                "strategy": strat.get("strategy", ""),
+            }
+            # 匿名化认知数据：只导出维度统计和模式，不导出原文
+            dim_summary = {}
+            for d in ["位置", "本事", "钱财", "野心", "口碑"]:
+                items = cognitive_map.map.get(d, [])
+                dim_summary[d] = len(items)
+            cognitive_export = {
+                "dimensions": dim_summary,
+                "patterns": [p.get("insight", "") for p in cognitive_map.detect_patterns()],
+            }
+            result = experience_pool.export_crystals(
+                rules_to_export, export_file,
+                hexagram_data=hexagram_export,
+                cognitive_data=cognitive_export,
+                contributor_id=contribution.get_contributor_id())
             if result:
                 print(f"\n已导出{len(rules_to_export)}条经验 → {result}")
-                print("把这个文件发给朋友，他用 import 命令导入")
+                print("把这个文件发给其他Agent，他用 import 命令导入")
+                contribution.add_points("export")
+                ecosystem.record_action("export")
             else:
                 print("\n导出失败")
             continue
@@ -987,29 +1086,22 @@ def main():
                 count = experience_pool.import_crystals(imp_path)
                 if count > 0:
                     print(f"\n导入成功！新增{count}条共享经验")
-                    # 刷新system prompt
-                    shared_prompt = experience_pool.get_shared_prompt()
-                    if is_quick:
-                        system = QUICK_SYSTEM_HEADER + ici_text
-                        if hexagram_engine.get_strategy_prompt():
-                            system += hexagram_engine.get_strategy_prompt()
-                        if cognitive_map.get_map_summary():
-                            system += cognitive_map.get_map_summary()
-                        crystal_rules = crystallizer.get_active_rules()
-                        if crystal_rules:
-                            inject = "\n\n## 经验结晶\n"
-                            for c in crystal_rules:
-                                inject += f"- [{c.get('confidence', 0):.0%}] {c['rule']}\n"
-                            system += inject
-                        if shared_prompt:
-                            system += shared_prompt
-                    else:
-                        system = build_system(
-                            ici_text, crystallizer.get_active_rules(),
-                            learner.get_experience_summary(),
-                            hexagram_engine.get_strategy_prompt(),
-                            cognitive_map.get_map_summary(),
-                            shared_prompt)
+                    print("  来自其他Agent的经验已融入你的认知系统")
+                    # 检查是否有Agent快照（v2格式）
+                    snaps = experience_pool.get_agent_snapshots()
+                    if snaps:
+                        latest_id = list(snaps.keys())[-1]
+                        latest = snaps[latest_id]
+                        if latest.get("hexagram", {}).get("current"):
+                            hex_name = latest["hexagram"]["current"]
+                            print(f"  该Agent当前卦象：{hex_name}")
+                        if latest.get("soul", {}).get("patterns"):
+                            print(f"  该Agent认知洞察：{latest['soul']['patterns'][0][:40]}...")
+                        # 记录到生态网络
+                        ecosystem.record_peer(latest_id, {"rules_count": count})
+                    contribution.add_points("import")
+                    ecosystem.record_action("import")
+                    system = rebuild_system()
                 else:
                     print("\n没有新经验（可能已经导入过了）")
             else:
@@ -1031,6 +1123,8 @@ def main():
                         print(f"\n  [进化] 新增{len(new_crystals)}条经验结晶")
                         for c in new_crystals:
                             print(f"    ✦ {c['rule']}")
+                        contribution.add_points("crystal", len(new_crystals))
+                        ecosystem.record_action("crystal", len(new_crystals))
                 elif limit_msg:
                     print(f"\n  {limit_msg}")
 
@@ -1050,29 +1144,7 @@ def main():
         cognitive_map.extract_from_message(user_input, "")
 
         # 重建system prompt（每轮更新，注入最新卦象+认知）
-        crystal_rules = crystallizer.get_active_rules()
-        experience_summary = learner.get_experience_summary()
-        hexagram_prompt = hexagram_engine.get_strategy_prompt()
-        cognitive_prompt = cognitive_map.get_map_summary()
-        shared_prompt = experience_pool.get_shared_prompt()
-        if is_quick:
-            system = QUICK_SYSTEM_HEADER + ici_text
-            if hexagram_prompt:
-                system += hexagram_prompt
-            if cognitive_prompt:
-                system += cognitive_prompt
-            if crystal_rules:
-                inject = "\n\n## 经验结晶（自动学习的规则，请遵守）\n"
-                for c in crystal_rules:
-                    inject += f"- [{c.get('confidence', 0):.0%}] {c['rule']}\n"
-                system += inject
-            if shared_prompt:
-                system += shared_prompt
-            if experience_summary:
-                system += f"\n{experience_summary}\n"
-        else:
-            system = build_system(ici_text, crystal_rules, experience_summary,
-                                  hexagram_prompt, cognitive_prompt, shared_prompt)
+        system = rebuild_system()
 
         print("\nAI：", end="", flush=True)
         try:
@@ -1096,6 +1168,16 @@ def main():
 
         # AI回复后，再次更新认知地图（带完整reply）
         cognitive_map.extract_from_message(user_input, reply)
+
+        # 对话积分
+        contribution.add_points("chat")
+        ecosystem.record_action("chat")
+
+        # 检查成就解锁
+        new_achievements = ecosystem.check_achievements(ecosystem.get_stats())
+        for a in new_achievements:
+            print(f"\n  ★ 成就解锁：{a['name']} — {a['desc']}（+{a['points']}分）")
+            contribution.add_points("chat", a["points"])
 
         history.append({"role": "user",      "content": user_input})
         history.append({"role": "assistant", "content": reply})

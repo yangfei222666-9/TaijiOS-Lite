@@ -163,18 +163,9 @@ class CognitiveMap:
         return "\n".join(lines)
 
     def _load_map(self) -> dict:
-        if not os.path.exists(self.map_path):
-            return {}
-        try:
-            with open(self.map_path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return {}
+        from .safe_io import safe_json_load
+        return safe_json_load(self.map_path, {})
 
     def _save_map(self):
-        os.makedirs(os.path.dirname(self.map_path) or ".", exist_ok=True)
-        try:
-            with open(self.map_path, "w", encoding="utf-8") as f:
-                json.dump(self.map, f, ensure_ascii=False, indent=2)
-        except Exception:
-            pass
+        from .safe_io import safe_json_save
+        safe_json_save(self.map_path, self.map)

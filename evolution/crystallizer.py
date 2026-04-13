@@ -223,26 +223,19 @@ class CrystallizationEngine:
         return outcomes
 
     def _load_crystals(self):
-        if not os.path.exists(self.crystals_path):
-            self.crystals = []
-            return
-        try:
-            with open(self.crystals_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
+        from .safe_io import safe_json_load
+        data = safe_json_load(self.crystals_path, None)
+        if data:
             self.crystals = data.get("crystals", [])
-        except Exception:
+        else:
             self.crystals = []
 
     def _save_crystals(self):
-        os.makedirs(os.path.dirname(self.crystals_path) or ".", exist_ok=True)
+        from .safe_io import safe_json_save
         data = {
             "version": 2,
             "crystallized_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "total_crystals": len(self.crystals),
             "crystals": self.crystals,
         }
-        try:
-            with open(self.crystals_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            logger.warning("Save crystals failed: %s", e)
+        safe_json_save(self.crystals_path, data)

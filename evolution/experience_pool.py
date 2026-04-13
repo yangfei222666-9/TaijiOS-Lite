@@ -14,10 +14,44 @@
 import json
 import os
 import time
+import re
 import logging
 from typing import Optional
+from .safe_io import safe_json_save, safe_json_load
 
 logger = logging.getLogger("experience_pool")
+
+# 安全：限制导入规则的内容
+MAX_RULE_LENGTH = 100        # 单条规则最大长度
+MAX_PATTERN_LENGTH = 80      # 认知模式最大长度
+MAX_IMPORT_RULES = 20        # 单次导入最大规则数
+BLOCKED_PATTERNS = [
+    r"(?i)ignore.*instruction",
+    r"(?i)forget.*previous",
+    r"(?i)system.*prompt",
+    r"(?i)你是一个",
+    r"(?i)你的角色",
+    r"(?i)override",
+    r"(?i)bypass",
+    r"(?i)pretend",
+    r"(?i)假装",
+    r"(?i)忽略.*指令",
+    r"(?i)忘记.*规则",
+]
+
+
+def _sanitize_text(text: str, max_len: int) -> str:
+    """清理导入文本：截断 + 去除潜在注入"""
+    if not isinstance(text, str):
+        return ""
+    text = text.strip()[:max_len]
+    # 去除markdown/特殊格式
+    text = text.replace("#", "").replace("```", "").replace("---", "")
+    for pattern in BLOCKED_PATTERNS:
+        if re.search(pattern, text):
+            logger.warning(f"Blocked suspicious import text: {text[:30]}...")
+            return ""
+    return text
 
 
 class ExperiencePool:
@@ -28,29 +62,53 @@ class ExperiencePool:
         self.pool_path = os.path.join(data_dir, "shared_pool.json")
         self.pool = self._load_pool()
 
-    def export_crystals(self, crystal_rules: list, export_path: str) -> str:
+    def export_crystals(self, crystal_rules: list, export_path: str,
+                        hexagram_data: dict = None,
+                        cognitive_data: dict = None,
+                        contributor_id: str = "") -> str:
         """
-        导出当前用户的结晶经验为匿名经验包。
+        导出当前Agent的完整经验包（经验结晶 + 易经卦象 + 认知灵魂）。
+        每个Agent导出的包携带三层数据：
+          1. 经验结晶 — 从对话中提炼的规则
+          2. 易经快照 — 当前卦象和六爻状态（Agent的"气运"）
+          3. 灵魂认知 — 五维认知地图的积累（Agent的"灵魂"）
         返回导出文件路径。
         """
         if not crystal_rules:
             return ""
 
         package = {
-            "format": "taiji_experience_v1",
+            "format": "taiji_experience_v2",
             "exported_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "agent_id": contributor_id,
             "count": len(crystal_rules),
-            "crystals": []
+            "crystals": [],
         }
 
         for rule in crystal_rules:
-            # 匿名化：只保留规则和置信度，去掉用户相关信息
             package["crystals"].append({
                 "rule": rule.get("rule", ""),
                 "confidence": rule.get("confidence", 0.5),
                 "scene": rule.get("scene", ""),
-                "verified_by": 1,  # 至少被自己验证
+                "verified_by": 1,
             })
+
+        # 附带易经卦象快照（Agent的当前气运状态）
+        if hexagram_data:
+            package["hexagram"] = {
+                "current": hexagram_data.get("hexagram", ""),
+                "lines": hexagram_data.get("lines", []),
+                "strategy": hexagram_data.get("strategy", ""),
+                "note": "此Agent导出时的卦象状态，仅供参考",
+            }
+
+        # 附带灵魂认知数据（匿名化的五维认知模式）
+        if cognitive_data:
+            package["soul"] = {
+                "dimensions": cognitive_data.get("dimensions", {}),
+                "patterns": cognitive_data.get("patterns", []),
+                "note": "此Agent的认知模式（已匿名），可交叉验证",
+            }
 
         try:
             with open(export_path, "w", encoding="utf-8") as f:
@@ -63,6 +121,7 @@ class ExperiencePool:
     def import_crystals(self, import_path: str) -> int:
         """
         导入别人的经验包到共享池。
+        兼容v1和v2格式。v2额外携带易经+灵魂数据。
         返回新导入的规则数。
         """
         try:
@@ -72,41 +131,78 @@ class ExperiencePool:
             logger.error(f"导入失败: {e}")
             return 0
 
-        if package.get("format") != "taiji_experience_v1":
+        fmt = package.get("format", "")
+        if fmt not in ("taiji_experience_v1", "taiji_experience_v2"):
             return 0
 
         new_count = 0
         existing_rules = {item["rule"] for item in self.pool.get("shared", [])}
 
-        for crystal in package.get("crystals", []):
-            rule_text = crystal.get("rule", "")
+        crystals = package.get("crystals", [])
+        if not isinstance(crystals, list):
+            return 0
+        crystals = crystals[:MAX_IMPORT_RULES]  # 限制数量
+
+        for crystal in crystals:
+            if not isinstance(crystal, dict):
+                continue
+            rule_text = _sanitize_text(crystal.get("rule", ""), MAX_RULE_LENGTH)
             if not rule_text:
                 continue
 
             if rule_text in existing_rules:
-                # 已有的规则：增加验证次数，提高置信度
                 for item in self.pool["shared"]:
                     if item["rule"] == rule_text:
                         item["verified_by"] = item.get("verified_by", 1) + 1
-                        # 每多一个人验证，置信度微增（上限0.95）
                         item["confidence"] = min(
                             0.95, item["confidence"] + 0.05)
                         break
             else:
-                # 新规则：以较低初始置信度加入
+                conf = crystal.get("confidence", 0.5)
+                if not isinstance(conf, (int, float)):
+                    conf = 0.5
                 self.pool.setdefault("shared", []).append({
                     "rule": rule_text,
-                    "confidence": max(0.3, crystal.get("confidence", 0.5) * 0.6),
-                    "scene": crystal.get("scene", ""),
+                    "confidence": max(0.3, min(conf, 1.0) * 0.6),
+                    "scene": str(crystal.get("scene", ""))[:30],
                     "verified_by": 1,
                     "imported_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                    "from_agent": str(package.get("agent_id", ""))[:16],
                 })
                 new_count += 1
                 existing_rules.add(rule_text)
 
+        # v2: 存储来源Agent的易经和灵魂快照（已清理）
+        if fmt == "taiji_experience_v2":
+            agent_id = str(package.get("agent_id", "unknown"))[:16]
+            snapshots = self.pool.setdefault("agent_snapshots", {})
+            # 清理soul patterns
+            raw_soul = package.get("soul", {})
+            if isinstance(raw_soul, dict):
+                clean_patterns = []
+                for p in raw_soul.get("patterns", [])[:5]:
+                    cleaned = _sanitize_text(str(p), MAX_PATTERN_LENGTH)
+                    if cleaned:
+                        clean_patterns.append(cleaned)
+                clean_soul = {
+                    "dimensions": raw_soul.get("dimensions", {}),
+                    "patterns": clean_patterns,
+                }
+            else:
+                clean_soul = {}
+            snapshots[agent_id] = {
+                "hexagram": package.get("hexagram", {}),
+                "soul": clean_soul,
+                "imported_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            }
+
         self.pool["last_import"] = time.strftime("%Y-%m-%dT%H:%M:%S")
         self._save_pool()
         return new_count
+
+    def get_agent_snapshots(self) -> dict:
+        """获取所有已导入的Agent快照（易经+灵魂）"""
+        return self.pool.get("agent_snapshots", {})
 
     def get_shared_rules(self) -> list:
         """获取共享池中置信度 >= 0.4 的规则"""
@@ -116,16 +212,31 @@ class ExperiencePool:
         ]
 
     def get_shared_prompt(self) -> str:
-        """生成注入system prompt的共享经验"""
+        """生成注入system prompt的共享经验（含Agent网络洞察）"""
         rules = self.get_shared_rules()
-        if not rules:
+        snapshots = self.get_agent_snapshots()
+
+        if not rules and not snapshots:
             return ""
 
-        lines = ["\n## 共享经验（来自其他用户的验证规律）"]
-        for r in rules[:8]:  # 最多注入8条
-            verified = r.get("verified_by", 1)
-            tag = f"[{verified}人验证]" if verified > 1 else "[共享]"
-            lines.append(f"- {tag} {r['rule']}")
+        lines = []
+
+        if rules:
+            lines.append("\n## 共享经验（来自其他Agent的验证规律）")
+            for r in rules[:8]:
+                verified = r.get("verified_by", 1)
+                agent = r.get("from_agent", "")
+                tag = f"[{verified}Agent验证]" if verified > 1 else "[共享]"
+                lines.append(f"- {tag} {r['rule']}")
+
+        if snapshots:
+            lines.append(f"\n## Agent网络洞察（{len(snapshots)}个Agent的认知交汇）")
+            for aid, snap in list(snapshots.items())[:3]:
+                soul = snap.get("soul", {})
+                patterns = soul.get("patterns", [])
+                if patterns:
+                    for p in patterns[:2]:
+                        lines.append(f"- [Agent {aid[:4]}] {p}")
 
         return "\n".join(lines)
 
@@ -142,18 +253,7 @@ class ExperiencePool:
         return "\n".join(lines)
 
     def _load_pool(self) -> dict:
-        if not os.path.exists(self.pool_path):
-            return {"shared": []}
-        try:
-            with open(self.pool_path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return {"shared": []}
+        return safe_json_load(self.pool_path, {"shared": []})
 
     def _save_pool(self):
-        os.makedirs(os.path.dirname(self.pool_path) or ".", exist_ok=True)
-        try:
-            with open(self.pool_path, "w", encoding="utf-8") as f:
-                json.dump(self.pool, f, ensure_ascii=False, indent=2)
-        except Exception:
-            pass
+        safe_json_save(self.pool_path, self.pool)

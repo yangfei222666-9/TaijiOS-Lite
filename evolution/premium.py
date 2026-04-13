@@ -169,18 +169,9 @@ class PremiumManager:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"""
 
     def _load_license(self) -> dict:
-        if not os.path.exists(self.license_path):
-            return {}
-        try:
-            with open(self.license_path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return {}
+        from .safe_io import safe_json_load
+        return safe_json_load(self.license_path, {})
 
     def _save_license(self):
-        os.makedirs(os.path.dirname(self.license_path) or ".", exist_ok=True)
-        try:
-            with open(self.license_path, "w", encoding="utf-8") as f:
-                json.dump(self.license, f, ensure_ascii=False, indent=2)
-        except Exception:
-            pass
+        from .safe_io import safe_json_save
+        safe_json_save(self.license_path, self.license)
