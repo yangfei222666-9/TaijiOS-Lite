@@ -16,6 +16,8 @@ TaijiOS Lite — 带自进化的ICI认知AI
 用法：把ICI文件(.docx)放在同一个文件夹，双击运行
 """
 
+VERSION = "1.2.0"
+
 import sys
 import os
 import json
@@ -98,8 +100,9 @@ QUICK_QUESTIONS = [
 def quick_build_profile() -> str:
     """通过7个问题快速生成基础认知档案"""
     print("\n" + "━" * 50)
-    print("  首次使用 — 快速建立你的认知档案")
-    print("  回答7个问题，30秒搞定")
+    print("  军师要了解主公，才能出好主意")
+    print("  回答7个问题，我就能开始为你谋划")
+    print("  （请用中文回答，效果更好）")
     print("━" * 50 + "\n")
 
     answers = {}
@@ -132,7 +135,7 @@ def quick_build_profile() -> str:
 当前困扰：{answers['problem']}
 核心目标：{answers['goal']}
 """
-    print("\n  档案已创建！开始对话。\n")
+    print("\n  好，我已经记住你了。接下来直接说你想聊什么。\n")
     return profile_text
 
 
@@ -579,11 +582,12 @@ def find_ici_file():
 
     # 4. 没有任何档案 → 选择：建档 or 拖文件
     print("\n" + "━" * 50)
-    print("  欢迎！这是你第一次使用。")
+    print("  欢迎，主公。")
+    print("  我是你的认知军师，从今天起为你出谋划策。")
     print()
-    print("  你有两个选择：")
-    print("  1. 没有ICI文件 → 回答几个问题，30秒快速建档")
-    print("  2. 有ICI文件   → 把.docx文件拖进来")
+    print("  要了解你，我需要一些基本信息：")
+    print("  1. 快速问答 → 7个问题，30秒搞定（推荐）")
+    print("  2. 导入档案 → 如果你有ICI文件(.docx)")
     print("━" * 50)
 
     while True:
@@ -620,8 +624,9 @@ def find_ici_file():
 def main():
     print()
     print("━" * 55)
-    print("  TaijiOS Lite — 你的专属认知军师")
-    print("  一针见血，用得越多越懂你")
+    print(f"  TaijiOS Lite v{VERSION}")
+    print("  你的专属认知军师 — 诸葛亮级别的")
+    print("  一针见血，越用越懂你，用久了比你更了解你自己")
     print("━" * 55)
 
     # 初始化自进化引擎（五引擎并行）
@@ -702,16 +707,30 @@ def main():
     history = load_history(history_key)
 
     if history:
-        print(f"已加载 {len(history)//2} 条历史对话")
+        print(f"\n  欢迎回来，上次聊了{len(history)//2}轮，我都记得。")
     else:
-        print("新对话开始")
+        print("\n  军师就位，随时听候主公差遣。")
 
-    print("\n命令：exit退出 | clear清空 | status进化状态 | model切换模型")
-    print("      export导出经验 | import导入经验 | upgrade付费升级\n")
+    print("\n  输入 help 查看所有命令\n")
     print("━" * 55)
 
     prev_user_input = ""
     prev_reply = ""
+
+    # 新对话自动打招呼
+    if not history:
+        print("\nAI：", end="", flush=True)
+        try:
+            greeting = chat(system, history,
+                "这是我们第一次对话。请根据我的档案信息，用一句话点评我的现状，然后问我一个直击要害的问题。不要自我介绍，不要寒暄。",
+                model_config)
+            print(greeting)
+            history.append({"role": "user", "content": "你好"})
+            history.append({"role": "assistant", "content": greeting})
+            save_history(history_key, history)
+            prev_reply = greeting
+        except Exception:
+            print("你好，我是你的认知军师。有什么要聊的，直接说。")
 
     while True:
         try:
@@ -726,10 +745,145 @@ def main():
         if user_input.lower() in ("exit", "quit", "退出"):
             break
 
+        if user_input.lower() in ("help", "帮助", "命令"):
+            print(f"""
+{'━' * 45}
+  TaijiOS Lite v{VERSION} — 命令列表
+{'━' * 45}
+  对话命令：
+    help        显示本帮助
+    status      查看完整进化状态
+    clear       清空对话历史
+    exit        退出
+
+  模型管理：
+    model       查看/切换AI模型
+
+  进化系统：
+    export      导出你的经验（发给朋友）
+    import      导入别人的经验
+    share       生成分享卡片（发朋友圈）
+    yijing      易经课堂（解读你当前的卦象）
+
+  账户：
+    upgrade     查看Premium功能
+    activate    输入激活码升级
+    reset       重建个人档案
+    invite      查看邀请码（Premium）
+{'━' * 45}""")
+            continue
+
         if user_input.lower() in ("clear", "清空"):
             history = []
             save_history(history_key, history)
             print("历史已清空")
+            continue
+
+        if user_input.lower() in ("reset", "重建"):
+            try:
+                confirm = input("  确定重建档案吗？当前档案会被覆盖 (y/n) ").strip().lower()
+            except EOFError:
+                confirm = "n"
+            if confirm in ("y", "yes", "是"):
+                ici_text = quick_build_profile()
+                is_quick = True
+                history_key = "quick_profile"
+                history = []
+                save_history(history_key, history)
+                system = QUICK_SYSTEM_HEADER + ici_text
+                print("  档案已重建，对话已重置")
+            continue
+
+        if user_input.lower() in ("share", "分享"):
+            # 生成分享卡片
+            stats = learner.get_stats_display()
+            hex_strat = hexagram_engine.get_strategy_prompt()
+            cog = cognitive_map.get_display()
+            crystal_count = len(crystallizer.get_active_rules())
+
+            card = f"""
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  我的认知军师 — TaijiOS Lite
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━"""
+
+            if hex_strat:
+                # 提取卦名
+                for line in hex_strat.strip().split("\n"):
+                    if "当前卦象" in line:
+                        card += f"\n  {line.strip()}"
+                    if "风格定位" in line:
+                        card += f"\n  {line.strip()}"
+
+            if crystal_count > 0:
+                card += f"\n  已积累{crystal_count}条经验结晶"
+
+            if stats:
+                card += f"\n  {stats}"
+
+            card += f"""
+
+  AI帮我看清自己，越用越懂我
+  免费体验：github.com/yangfei222666-9/TaijiOS-Lite
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━"""
+
+            print(card)
+            print("\n  复制上面的内容发朋友圈/群聊")
+            continue
+
+        if user_input.lower() in ("yijing", "易经", "卦象"):
+            # 易经学习：解读当前卦象
+            hex_strat = hexagram_engine.get_strategy_prompt()
+            current = hexagram_engine.current_hexagram
+            lines = hexagram_engine.current_lines
+            lines_display = "".join("⚊" if l == 1 else "⚋" for l in lines)
+
+            from evolution.hexagram import HEXAGRAM_STRATEGIES
+            strat = HEXAGRAM_STRATEGIES.get(current, {})
+
+            print(f"""
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  易经课堂 — 读懂你当前的卦象
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  当前卦象：{strat.get('name', current)}
+  六爻：{lines_display}
+
+  六爻含义（从下到上）：
+  初爻 情绪基底：{'稳定(阳)' if lines[0] else '波动(阴)'}
+  二爻 行动力：  {'有目标(阳)' if lines[1] else '迷茫(阴)'}
+  三爻 认知力：  {'清晰(阳)' if lines[2] else '混沌(阴)'}
+  四爻 资源：    {'充足(阳)' if lines[3] else '匮乏(阴)'}
+  五爻 方向感：  {'明确(阳)' if lines[4] else '摇摆(阴)'}
+  上爻 满意度：  {'正面(阳)' if lines[5] else '负面(阴)'}
+
+  军师策略：{strat.get('strategy', '')}
+  风格定位：{strat.get('style', '')}
+
+  易经智慧：
+  卦象不是算命，是对你当前状态的快照。
+  阳爻多 = 你状态好，可以进攻。
+  阴爻多 = 你需要蓄力，不要硬冲。
+  卦象会随对话变化 — 你变了，卦就变了。
+
+  当前阳爻{sum(lines)}个 / 阴爻{6-sum(lines)}个
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━""")
+            continue
+
+        if user_input.lower() in ("invite", "邀请"):
+            if premium.is_premium:
+                print(f"""
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  你的专属邀请码（发给朋友）：
+
+  TAIJI-732E-A562-8BA0
+  TAIJI-FAEC-BEBE-18E9
+  TAIJI-6310-172F-A3EA
+
+  朋友输入 activate <邀请码> 即可升级Premium
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━""")
+            else:
+                print("\n  升级Premium后才能获得邀请码")
+                print("  输入 upgrade 查看详情")
             continue
 
         if user_input.lower() in ("model", "模型"):
@@ -924,7 +1078,18 @@ def main():
         try:
             reply = chat(system, history, user_input, model_config)
         except Exception as e:
-            print(f"\n[错误] {e}")
+            err = str(e)
+            if "401" in err or "authentication" in err.lower() or "api key" in err.lower():
+                print(f"\n[错误] API Key无效或已过期")
+                print(f"  输入 model 重新配置，或检查你的Key是否正确")
+            elif "429" in err or "rate" in err.lower() or "quota" in err.lower():
+                print(f"\n[错误] 请求太频繁或额度用完了")
+                print(f"  等几秒再试，或去充值/换个模型（输入 model）")
+            elif "timeout" in err.lower() or "connect" in err.lower():
+                print(f"\n[错误] 网络连接失败")
+                print(f"  检查网络，或换个模型试试（输入 model）")
+            else:
+                print(f"\n[错误] {e}")
             continue
 
         print(reply)
