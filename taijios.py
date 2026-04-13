@@ -67,7 +67,6 @@ from evolution.premium import PremiumManager
 
 load_dotenv(APP_DIR / ".env")
 
-DEEPSEEK_KEY = os.getenv("DEEPSEEK_API_KEY")
 DATA_DIR     = APP_DIR / "data"
 HISTORY_DIR  = DATA_DIR / "history"
 EVOLUTION_DIR = DATA_DIR / "evolution"
@@ -245,37 +244,157 @@ def save_history(name: str, history: list):
     f = HISTORY_DIR / f"{name}.json"
     f.write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
 
-# ── API Key ──────────────────────────────────────────────────────────────────
+# ── 多模型支持 ──────────────────────────────────────────────────────────────
 
-def ensure_api_key() -> str:
-    global DEEPSEEK_KEY
-    if DEEPSEEK_KEY:
-        return DEEPSEEK_KEY
-    print("\n首次使用需要配置 DeepSeek API Key")
-    print("（去 platform.deepseek.com 注册，充1块钱够用很久）\n")
-    key = input("请粘贴你的 API Key：").strip()
-    if key:
-        DEEPSEEK_KEY = key
-        env_file = APP_DIR / ".env"
-        env_file.write_text(f"DEEPSEEK_API_KEY={key}\n", encoding="utf-8")
-        print("已保存，下次不用再输入\n")
-        return key
-    return ""
+MODEL_CONFIG_PATH = DATA_DIR / "model_config.json"
+
+# 预置模型列表
+MODEL_PRESETS = {
+    "1": {
+        "name": "DeepSeek",
+        "base_url": "https://api.deepseek.com",
+        "model": "deepseek-chat",
+        "env_key": "DEEPSEEK_API_KEY",
+        "hint": "去 platform.deepseek.com 注册，充1块钱够用很久",
+    },
+    "2": {
+        "name": "Claude (Anthropic)",
+        "base_url": "https://api.anthropic.com/v1/",
+        "model": "claude-sonnet-4-20250514",
+        "env_key": "ANTHROPIC_API_KEY",
+        "hint": "去 console.anthropic.com 注册获取API Key",
+    },
+    "3": {
+        "name": "OpenAI (GPT)",
+        "base_url": "https://api.openai.com/v1",
+        "model": "gpt-4o",
+        "env_key": "OPENAI_API_KEY",
+        "hint": "去 platform.openai.com 注册获取API Key",
+    },
+    "4": {
+        "name": "通义千问 (Qwen)",
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "model": "qwen-plus",
+        "env_key": "DASHSCOPE_API_KEY",
+        "hint": "去 dashscope.aliyun.com 注册获取API Key",
+    },
+    "5": {
+        "name": "自定义API",
+        "base_url": "",
+        "model": "",
+        "env_key": "CUSTOM_API_KEY",
+        "hint": "填入任何兼容OpenAI格式的API",
+    },
+}
+
+
+def load_model_config() -> dict:
+    """加载已保存的模型配置"""
+    if MODEL_CONFIG_PATH.exists():
+        try:
+            return json.loads(MODEL_CONFIG_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    # 兼容旧版：如果有DEEPSEEK_API_KEY环境变量，自动迁移
+    old_key = os.getenv("DEEPSEEK_API_KEY")
+    if old_key:
+        return {
+            "provider": "DeepSeek",
+            "base_url": "https://api.deepseek.com",
+            "model": "deepseek-chat",
+            "api_key": old_key,
+        }
+    return {}
+
+
+def save_model_config(config: dict):
+    MODEL_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    MODEL_CONFIG_PATH.write_text(
+        json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def setup_model() -> dict:
+    """首次或切换模型时的配置流程"""
+    print("\n" + "━" * 50)
+    print("  选择AI模型")
+    print("━" * 50)
+    for key, preset in MODEL_PRESETS.items():
+        print(f"  {key}. {preset['name']}")
+    print()
+
+    while True:
+        try:
+            choice = input("输入编号（1-5）：").strip()
+        except EOFError:
+            choice = "1"
+        if choice in MODEL_PRESETS:
+            break
+        print("请输入1-5")
+
+    preset = MODEL_PRESETS[choice]
+
+    if choice == "5":
+        # 自定义API
+        try:
+            base_url = input("  API地址（如 https://api.example.com/v1）：").strip()
+            model = input("  模型名称（如 gpt-4o）：").strip()
+        except EOFError:
+            base_url, model = "", ""
+        if not base_url or not model:
+            print("信息不完整，默认使用DeepSeek")
+            preset = MODEL_PRESETS["1"]
+            base_url = preset["base_url"]
+            model = preset["model"]
+    else:
+        base_url = preset["base_url"]
+        model = preset["model"]
+
+    print(f"\n  {preset['hint']}\n")
+    try:
+        api_key = input("  请粘贴API Key：").strip()
+    except EOFError:
+        api_key = ""
+
+    if not api_key:
+        print("没有输入Key，无法使用")
+        return {}
+
+    config = {
+        "provider": preset["name"],
+        "base_url": base_url,
+        "model": model,
+        "api_key": api_key,
+    }
+    save_model_config(config)
+    print(f"\n  已配置 {preset['name']}，下次不用再选\n")
+    return config
+
+
+def ensure_model_config() -> dict:
+    """确保有可用的模型配置"""
+    config = load_model_config()
+    if config and config.get("api_key"):
+        return config
+    return setup_model()
+
 
 # ── 对话 ──────────────────────────────────────────────────────────────────────
 
-def chat(system: str, history: list, user_input: str) -> str:
-    api_key = ensure_api_key()
-    if not api_key:
-        return "[错误] 没有 API Key，无法对话"
+def chat(system: str, history: list, user_input: str,
+         model_config: dict = None) -> str:
+    if not model_config or not model_config.get("api_key"):
+        return "[错误] 没有配置API，无法对话"
 
-    client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
+    client = OpenAI(
+        api_key=model_config["api_key"],
+        base_url=model_config["base_url"],
+    )
     messages = [{"role": "system", "content": system}] + history + [
         {"role": "user", "content": user_input}
     ]
 
     resp = client.chat.completions.create(
-        model="deepseek-chat",
+        model=model_config["model"],
         messages=messages,
         max_tokens=1500,
         temperature=0.6,
@@ -373,12 +492,23 @@ def main():
     experience_pool = ExperiencePool(str(EVOLUTION_DIR))
     premium = PremiumManager(str(EVOLUTION_DIR))
 
+    # 配置AI模型
+    model_config = ensure_model_config()
+    if not model_config:
+        print("未配置AI模型，无法使用")
+        try:
+            input("\n按回车退出...")
+        except EOFError:
+            pass
+        sys.exit(1)
+
     # 显示进化状态
     crystal_count = len(crystallizer.get_active_rules())
     shared_count = len(experience_pool.get_shared_rules())
     stats_display = learner.get_stats_display()
     premium_tag = "Premium" if premium.is_premium else "免费版"
-    print(f"\n  [{premium_tag}] {crystal_count}条结晶 | {shared_count}条共享经验")
+    model_name = model_config.get("provider", "未知")
+    print(f"\n  [{premium_tag}] {model_name} | {crystal_count}条结晶 | {shared_count}条共享经验")
     if stats_display:
         print(f"  {stats_display}")
 
@@ -436,7 +566,7 @@ def main():
     else:
         print("新对话开始")
 
-    print("\n命令：exit退出 | clear清空 | status进化状态")
+    print("\n命令：exit退出 | clear清空 | status进化状态 | model切换模型")
     print("      export导出经验 | import导入经验 | upgrade付费升级\n")
     print("━" * 55)
 
@@ -462,12 +592,28 @@ def main():
             print("历史已清空")
             continue
 
+        if user_input.lower() in ("model", "模型"):
+            print(f"\n  当前模型：{model_config.get('provider', '未知')} ({model_config.get('model', '')})")
+            try:
+                switch = input("  要切换吗？(y/n) ").strip().lower()
+            except EOFError:
+                switch = "n"
+            if switch in ("y", "yes", "是"):
+                new_config = setup_model()
+                if new_config and new_config.get("api_key"):
+                    model_config = new_config
+                    print(f"  已切换到 {model_config['provider']}")
+                else:
+                    print("  切换取消，继续使用当前模型")
+            continue
+
         if user_input.lower() in ("status", "状态"):
             stats = learner.get_stats_display()
             rules = crystallizer.get_active_rules()
             print(f"\n{'━' * 40}")
-            # 会员状态
+            # 会员状态 + 模型
             print(f"  {premium.get_display()}")
+            print(f"  [模型] {model_config.get('provider', '未知')} ({model_config.get('model', '')})")
             # 卦象状态
             hex_strat = hexagram_engine.get_strategy_prompt()
             if hex_strat:
@@ -636,7 +782,7 @@ def main():
 
         print("\nAI：", end="", flush=True)
         try:
-            reply = chat(system, history, user_input)
+            reply = chat(system, history, user_input, model_config)
         except Exception as e:
             print(f"\n[错误] {e}")
             continue
