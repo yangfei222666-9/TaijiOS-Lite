@@ -16,10 +16,20 @@ TaijiOS Lite — 带自进化的ICI认知AI
 用法：把ICI文件(.docx)放在同一个文件夹，双击运行
 """
 
-VERSION = "1.3.0"
+VERSION = "1.3.1"
 
 import sys
 import os
+
+# Windows exe 强制 UTF-8（解决 ascii 编码错误）
+os.environ["PYTHONUTF8"] = "1"
+if sys.platform == "win32":
+    import locale
+    try:
+        locale.setlocale(locale.LC_ALL, '')
+    except Exception:
+        pass
+
 import json
 import time
 try:
