@@ -54,6 +54,40 @@ def _sanitize_text(text: str, max_len: int) -> str:
     return text
 
 
+# 脱敏：导出时过滤个人敏感信息
+PII_PATTERNS = [
+    # 证件类
+    (r"\d{17}[\dXx]", "[身份证号]"),                  # 18位身份证（必须在手机号前）
+    (r"\d{15}", "[身份证号]"),                         # 15位身份证
+    # 联系方式
+    (r"1[3-9]\d{9}", "[手机号]"),                     # 手机号
+    (r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", "[邮箱]"),  # 邮箱
+    (r"(?:https?://)\S+", "[链接]"),                   # URL
+    # 人名（带称谓）
+    (r"[\u4e00-\u9fff]{2,4}(?:先生|女士|老师|总|哥|姐|叔|阿姨|老板|经理|主任|院长|教授|同学|医生|律师|老公|老婆|男友|女友|男朋友|女朋友|爱人|丈夫|妻子|媳妇|对象)", "[某人]"),
+    # 感情/亲密关系描述
+    (r"(?:我|他|她)(?:和|跟|与)[\u4e00-\u9fff]{2,4}(?:在一起|分手|离婚|结婚|复合|吵架|出轨|暧昧|恋爱|同居)", "[感情经历]"),
+    (r"(?:前男友|前女友|前任|前夫|前妻|初恋)[\u4e00-\u9fff]{0,4}", "[前任]"),
+    (r"(?:喜欢|爱上|暗恋|追求|表白)[\u4e00-\u9fff]{2,4}", "[感情细节]"),
+    # 地址
+    (r"[\u4e00-\u9fff]{2,6}(?:省|市|区|县|镇|村|路|街|巷|号|弄|栋|幢|室|楼)", "[地址]"),
+    # 公司/学校名
+    (r"[\u4e00-\u9fff]{2,8}(?:公司|集团|有限|股份|科技|学院|大学|中学|小学|幼儿园|医院)", "[机构]"),
+    # 微信/QQ等社交账号
+    (r"(?:微信|wx|WeChat)[：:\s]*\S{5,20}", "[社交账号]"),
+    (r"(?:QQ|qq)[：:\s]*\d{5,12}", "[社交账号]"),
+]
+
+
+def _desensitize_text(text: str) -> str:
+    """脱敏处理：去除个人敏感信息（姓名、感情、联系方式、地址等）"""
+    if not isinstance(text, str):
+        return ""
+    for pattern, replacement in PII_PATTERNS:
+        text = re.sub(pattern, replacement, text)
+    return text
+
+
 class ExperiencePool:
     """跨用户共享经验池"""
 
@@ -86,10 +120,13 @@ class ExperiencePool:
         }
 
         for rule in crystal_rules:
+            # 导出时脱敏：去除规则中的个人信息
+            clean_rule = _desensitize_text(rule.get("rule", ""))
+            clean_scene = _desensitize_text(rule.get("scene", ""))
             package["crystals"].append({
-                "rule": rule.get("rule", ""),
+                "rule": clean_rule,
                 "confidence": rule.get("confidence", 0.5),
-                "scene": rule.get("scene", ""),
+                "scene": clean_scene,
                 "verified_by": 1,
             })
 
@@ -102,12 +139,16 @@ class ExperiencePool:
                 "note": "此Agent导出时的卦象状态，仅供参考",
             }
 
-        # 附带灵魂认知数据（匿名化的五维认知模式）
+        # 附带灵魂认知数据（匿名化+脱敏的五维认知模式）
         if cognitive_data:
+            clean_patterns = [
+                _desensitize_text(p) for p in cognitive_data.get("patterns", [])
+                if _desensitize_text(p)
+            ]
             package["soul"] = {
                 "dimensions": cognitive_data.get("dimensions", {}),
-                "patterns": cognitive_data.get("patterns", []),
-                "note": "此Agent的认知模式（已匿名），可交叉验证",
+                "patterns": clean_patterns,
+                "note": "此Agent的认知模式（已匿名脱敏），可交叉验证",
             }
 
         try:

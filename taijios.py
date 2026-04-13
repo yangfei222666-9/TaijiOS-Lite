@@ -270,6 +270,12 @@ MODEL_PRESETS = {
         "model": "deepseek-chat",
         "hint": "去 platform.deepseek.com 注册，充1块钱够用很久",
     },
+    "1r": {
+        "name": "DeepSeek R1 (带思考)",
+        "base_url": "https://api.deepseek.com",
+        "model": "deepseek-reasoner",
+        "hint": "同DeepSeek账号，R1模型会展示完整思考过程",
+    },
     "2": {
         "name": "OpenAI (GPT)",
         "base_url": "https://api.openai.com/v1",
@@ -387,6 +393,7 @@ def setup_model() -> dict:
     print()
     print("  === 推荐（便宜好用） ===")
     print("  1.  DeepSeek          充1块钱用很久")
+    print("  1r. DeepSeek R1       带思考过程（推荐）")
     print("  2.  OpenAI (GPT)      国际主流")
     print("  3.  Claude            最聪明")
     print()
@@ -457,6 +464,13 @@ def setup_model() -> dict:
                 "第4步：复制那串 sk- 开头的密钥",
                 "第5步：回来粘贴到下面（右键粘贴）",
                 "充值：左侧「费用」→ 充1块钱够用几百次",
+            ],
+            "1r": [
+                "和DeepSeek用同一个账号和Key",
+                "R1模型会展示完整思考过程（军师怎么想的你都能看到）",
+                "第1步：如果还没注册，搜索「DeepSeek开放平台」注册",
+                "第2步：复制你的 sk- 开头密钥",
+                "第3步：粘贴到下面",
             ],
             "2": [
                 "第1步：打开 platform.openai.com",
@@ -536,6 +550,10 @@ def ensure_model_config() -> dict:
 
 def chat(system: str, history: list, user_input: str,
          model_config: dict = None) -> str:
+    """
+    发送对话请求。支持 DeepSeek Reasoner 的思考过程展示。
+    返回: (reply_text, thinking_text or None)
+    """
     if not model_config or not model_config.get("api_key"):
         return "[错误] 没有配置API，无法对话"
 
@@ -543,21 +561,44 @@ def chat(system: str, history: list, user_input: str,
         api_key=model_config["api_key"],
         base_url=model_config["base_url"],
     )
+
+    model_name = model_config.get("model", "")
+    is_reasoner = "reasoner" in model_name.lower()
+
     messages = [{"role": "system", "content": system}] + history + [
         {"role": "user", "content": user_input}
     ]
+
+    # reasoner模型不支持temperature和max_tokens参数名不同
+    kwargs = {"model": model_name, "messages": messages}
+    if is_reasoner:
+        kwargs["max_tokens"] = 4096
+    else:
+        kwargs["max_tokens"] = 1500
+        kwargs["temperature"] = 0.6
 
     # 自动重试一次（处理网络抖动/临时超时）
     last_err = None
     for attempt in range(2):
         try:
-            resp = client.chat.completions.create(
-                model=model_config["model"],
-                messages=messages,
-                max_tokens=1500,
-                temperature=0.6,
-            )
-            return resp.choices[0].message.content
+            resp = client.chat.completions.create(**kwargs)
+            msg = resp.choices[0].message
+
+            # DeepSeek Reasoner 返回 reasoning_content 字段
+            thinking = getattr(msg, "reasoning_content", None)
+            content = msg.content or ""
+
+            if thinking:
+                # 显示思考过程
+                print("\n  💭 思考过程：")
+                print("  ┌─────────────────────────────────────")
+                for line in thinking.strip().split("\n"):
+                    print(f"  │ {line}")
+                print("  └─────────────────────────────────────")
+                print()
+                print("  📝 结论：", end="")
+
+            return content
         except Exception as e:
             last_err = e
             if attempt == 0:
