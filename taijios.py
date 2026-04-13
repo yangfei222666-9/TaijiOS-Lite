@@ -248,44 +248,92 @@ def save_history(name: str, history: list):
 
 MODEL_CONFIG_PATH = DATA_DIR / "model_config.json"
 
-# 预置模型列表
+# 预置模型列表（全部兼容OpenAI接口格式）
 MODEL_PRESETS = {
     "1": {
         "name": "DeepSeek",
         "base_url": "https://api.deepseek.com",
         "model": "deepseek-chat",
-        "env_key": "DEEPSEEK_API_KEY",
         "hint": "去 platform.deepseek.com 注册，充1块钱够用很久",
     },
     "2": {
-        "name": "Claude (Anthropic)",
-        "base_url": "https://api.anthropic.com/v1/",
-        "model": "claude-sonnet-4-20250514",
-        "env_key": "ANTHROPIC_API_KEY",
-        "hint": "去 console.anthropic.com 注册获取API Key",
-    },
-    "3": {
         "name": "OpenAI (GPT)",
         "base_url": "https://api.openai.com/v1",
         "model": "gpt-4o",
-        "env_key": "OPENAI_API_KEY",
         "hint": "去 platform.openai.com 注册获取API Key",
+    },
+    "3": {
+        "name": "Claude (Anthropic)",
+        "base_url": "https://api.anthropic.com/v1/",
+        "model": "claude-sonnet-4-20250514",
+        "hint": "去 console.anthropic.com 注册获取API Key",
     },
     "4": {
         "name": "通义千问 (Qwen)",
         "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
         "model": "qwen-plus",
-        "env_key": "DASHSCOPE_API_KEY",
-        "hint": "去 dashscope.aliyun.com 注册获取API Key",
+        "hint": "去 dashscope.aliyun.com 开通，新用户有免费额度",
     },
     "5": {
+        "name": "智谱GLM (ChatGLM)",
+        "base_url": "https://open.bigmodel.cn/api/paas/v4",
+        "model": "glm-4-flash",
+        "hint": "去 open.bigmodel.cn 注册，glm-4-flash免费",
+    },
+    "6": {
+        "name": "豆包 (字节跳动)",
+        "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+        "model": "doubao-pro-32k",
+        "hint": "去 console.volcengine.com 开通豆包大模型",
+    },
+    "7": {
+        "name": "Moonshot (月之暗面/Kimi)",
+        "base_url": "https://api.moonshot.cn/v1",
+        "model": "moonshot-v1-8k",
+        "hint": "去 platform.moonshot.cn 注册获取API Key",
+    },
+    "8": {
+        "name": "百川 (Baichuan)",
+        "base_url": "https://api.baichuan-ai.com/v1",
+        "model": "Baichuan4",
+        "hint": "去 platform.baichuan-ai.com 注册获取API Key",
+    },
+    "9": {
+        "name": "零一万物 (Yi)",
+        "base_url": "https://api.lingyiwanwu.com/v1",
+        "model": "yi-large",
+        "hint": "去 platform.lingyiwanwu.com 注册获取API Key",
+    },
+    "10": {
+        "name": "Ollama (本地模型)",
+        "base_url": "http://localhost:11434/v1",
+        "model": "qwen2.5",
+        "hint": "先安装Ollama并拉取模型: ollama pull qwen2.5",
+    },
+    "11": {
+        "name": "OpenRouter (聚合平台)",
+        "base_url": "https://openrouter.ai/api/v1",
+        "model": "deepseek/deepseek-chat",
+        "hint": "去 openrouter.ai 注册，一个Key用所有模型",
+    },
+    "0": {
         "name": "自定义API",
         "base_url": "",
         "model": "",
-        "env_key": "CUSTOM_API_KEY",
-        "hint": "填入任何兼容OpenAI格式的API",
+        "hint": "填入任何兼容OpenAI格式的API地址",
     },
 }
+
+# 自动检测环境中已有的API Key
+AUTO_DETECT_KEYS = [
+    ("DEEPSEEK_API_KEY", "1"),
+    ("OPENAI_API_KEY", "2"),
+    ("ANTHROPIC_API_KEY", "3"),
+    ("DASHSCOPE_API_KEY", "4"),
+    ("ZHIPU_API_KEY", "5"),
+    ("ARK_API_KEY", "6"),
+    ("MOONSHOT_API_KEY", "7"),
+]
 
 
 def load_model_config() -> dict:
@@ -295,15 +343,19 @@ def load_model_config() -> dict:
             return json.loads(MODEL_CONFIG_PATH.read_text(encoding="utf-8"))
         except Exception:
             pass
-    # 兼容旧版：如果有DEEPSEEK_API_KEY环境变量，自动迁移
-    old_key = os.getenv("DEEPSEEK_API_KEY")
-    if old_key:
-        return {
-            "provider": "DeepSeek",
-            "base_url": "https://api.deepseek.com",
-            "model": "deepseek-chat",
-            "api_key": old_key,
-        }
+    # 自动检测环境中已有的API Key
+    for env_key, preset_id in AUTO_DETECT_KEYS:
+        key = os.getenv(env_key)
+        if key:
+            preset = MODEL_PRESETS[preset_id]
+            config = {
+                "provider": preset["name"],
+                "base_url": preset["base_url"],
+                "model": preset["model"],
+                "api_key": key,
+            }
+            save_model_config(config)
+            return config
     return {}
 
 
@@ -316,24 +368,49 @@ def save_model_config(config: dict):
 def setup_model() -> dict:
     """首次或切换模型时的配置流程"""
     print("\n" + "━" * 50)
-    print("  选择AI模型")
+    print("  选择AI模型（都能用，选你有的）")
     print("━" * 50)
-    for key, preset in MODEL_PRESETS.items():
-        print(f"  {key}. {preset['name']}")
     print()
+    print("  === 推荐（便宜好用） ===")
+    print("  1.  DeepSeek          充1块钱用很久")
+    print("  2.  OpenAI (GPT)      国际主流")
+    print("  3.  Claude            最聪明")
+    print()
+    print("  === 国产模型 ===")
+    print("  4.  通义千问 (阿里)    新用户免费额度")
+    print("  5.  智谱GLM            glm-4-flash免费")
+    print("  6.  豆包 (字节跳动)    Trae同款底座")
+    print("  7.  Moonshot (Kimi)   长文本强")
+    print("  8.  百川               中文理解强")
+    print("  9.  零一万物 (Yi)      性价比高")
+    print()
+    print("  === 高级 ===")
+    print("  10. Ollama (本地)     完全免费，需自己装")
+    print("  11. OpenRouter        一个Key用所有模型")
+    print("  0.  自定义API         填任何兼容地址")
+    print()
+
+    # 自动检测已有Key
+    detected = []
+    for env_key, preset_id in AUTO_DETECT_KEYS:
+        if os.getenv(env_key):
+            detected.append((preset_id, MODEL_PRESETS[preset_id]["name"]))
+    if detected:
+        print(f"  检测到已有Key：{', '.join(d[1] for d in detected)}")
+        print()
 
     while True:
         try:
-            choice = input("输入编号（1-5）：").strip()
+            choice = input("  输入编号：").strip()
         except EOFError:
             choice = "1"
         if choice in MODEL_PRESETS:
             break
-        print("请输入1-5")
+        print("  请输入有效编号")
 
     preset = MODEL_PRESETS[choice]
 
-    if choice == "5":
+    if choice == "0":
         # 自定义API
         try:
             base_url = input("  API地址（如 https://api.example.com/v1）：").strip()
@@ -341,7 +418,7 @@ def setup_model() -> dict:
         except EOFError:
             base_url, model = "", ""
         if not base_url or not model:
-            print("信息不完整，默认使用DeepSeek")
+            print("  信息不完整，默认使用DeepSeek")
             preset = MODEL_PRESETS["1"]
             base_url = preset["base_url"]
             model = preset["model"]
@@ -349,14 +426,76 @@ def setup_model() -> dict:
         base_url = preset["base_url"]
         model = preset["model"]
 
-    print(f"\n  {preset['hint']}\n")
-    try:
-        api_key = input("  请粘贴API Key：").strip()
-    except EOFError:
-        api_key = ""
+    # Ollama本地不需要Key
+    if choice == "10":
+        api_key = "ollama"  # Ollama不验证key，随便填
+        print(f"\n  本地模型不需要Key")
+        print(f"  确保Ollama已运行且拉取了模型: ollama pull {model}")
+    else:
+        # 详细引导用户获取API Key
+        print()
+        print("  " + "─" * 40)
+        guides = {
+            "1": [
+                "第1步：打开浏览器，搜索「DeepSeek开放平台」",
+                "第2步：注册账号（手机号就行）",
+                "第3步：登录后点「API Keys」→「创建」",
+                "第4步：复制那串 sk- 开头的密钥",
+                "第5步：回来粘贴到下面（右键粘贴）",
+                "充值：左侧「费用」→ 充1块钱够用几百次",
+            ],
+            "2": [
+                "第1步：打开 platform.openai.com",
+                "第2步：注册/登录账号",
+                "第3步：点「API Keys」→「Create new secret key」",
+                "第4步：复制密钥，回来粘贴到下面",
+            ],
+            "3": [
+                "第1步：打开 console.anthropic.com",
+                "第2步：注册/登录账号",
+                "第3步：点「API Keys」→「Create Key」",
+                "第4步：复制密钥，回来粘贴到下面",
+            ],
+            "4": [
+                "第1步：打开 dashscope.aliyun.com",
+                "第2步：用支付宝/阿里云账号登录",
+                "第3步：点「API-KEY管理」→「创建」",
+                "第4步：复制密钥，回来粘贴到下面",
+                "新用户有免费额度，不用充钱",
+            ],
+            "5": [
+                "第1步：打开 open.bigmodel.cn",
+                "第2步：注册/登录账号",
+                "第3步：点「API密钥」→「添加」",
+                "第4步：复制密钥，回来粘贴到下面",
+                "glm-4-flash模型完全免费",
+            ],
+            "6": [
+                "第1步：打开 console.volcengine.com",
+                "第2步：注册火山引擎账号",
+                "第3步：开通「豆包大模型」服务",
+                "第4步：创建API Key，复制回来粘贴",
+            ],
+            "7": [
+                "第1步：打开 platform.moonshot.cn",
+                "第2步：注册/登录（手机号）",
+                "第3步：点「API Key管理」→「新建」",
+                "第4步：复制密钥，回来粘贴到下面",
+            ],
+        }
+        steps = guides.get(choice, [f"  {preset['hint']}"])
+        for step in steps:
+            print(f"  {step}")
+        print("  " + "─" * 40)
+        print()
+
+        try:
+            api_key = input("  粘贴你的API Key（右键粘贴）：").strip()
+        except EOFError:
+            api_key = ""
 
     if not api_key:
-        print("没有输入Key，无法使用")
+        print("  没有输入Key，无法使用")
         return {}
 
     config = {
@@ -366,7 +505,8 @@ def setup_model() -> dict:
         "api_key": api_key,
     }
     save_model_config(config)
-    print(f"\n  已配置 {preset['name']}，下次不用再选\n")
+    print(f"\n  已配置 {preset['name']}，下次不用再选")
+    print(f"  随时输入 model 切换\n")
     return config
 
 
