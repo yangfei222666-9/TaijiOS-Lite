@@ -178,17 +178,32 @@ def find_ici_file() -> str:
                 return str(docx_files[int(choice) - 1])
             print("输入有误，请重新选择")
 
-    print("\n没有找到ICI文件（.docx）")
-    print("请把你的ICI文件拖到这个窗口，然后按回车：\n")
+    print("\n" + "!" * 50)
+    print("  没有找到ICI文件！")
+    print()
+    print("  请把你的ICI文件（.docx）复制到这个文件夹：")
+    print(f"  {APP_DIR}")
+    print()
+    print("  然后重新双击运行本程序。")
+    print()
+    print("  或者：直接把.docx文件拖到下面，按回车")
+    print("!" * 50)
+    print()
     while True:
         try:
-            ici_path = input("→ ").strip().strip('"')
+            ici_path = input("拖入文件 → ").strip().strip('"')
         except EOFError:
             print("未输入文件路径")
-            input("按回车退出...")
+            try:
+                input("按回车退出...")
+            except EOFError:
+                pass
             sys.exit(1)
         if not ici_path:
-            print("请拖入.docx文件")
+            print("请拖入.docx文件，或者关掉窗口把文件复制进来再重新打开")
+            continue
+        if not ici_path.lower().endswith(".docx"):
+            print("这不是.docx文件！请拖入你的ICI文件（后缀是.docx的）")
             continue
         if Path(ici_path).exists():
             return ici_path
