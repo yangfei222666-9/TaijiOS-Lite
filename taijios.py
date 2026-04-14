@@ -1190,6 +1190,13 @@ def main():
         hex_result = hexagram_engine.update_from_conversation(
             recent_user_msgs, positive_rate)
 
+        # 每3轮触发一次易经推演
+        round_count = len(history) // 2 + 1
+        if round_count >= 3 and round_count % 3 == 0:
+            divination = hexagram_engine.divine(recent_user_msgs, positive_rate)
+            if divination and divination.get("display"):
+                print(divination["display"])
+
         # 更新认知地图（从当前对话提取）
         # 先用空reply，等AI回复后再提取完整的
         cognitive_map.extract_from_message(user_input, "")
