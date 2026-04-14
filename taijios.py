@@ -84,13 +84,162 @@ load_dotenv(APP_DIR / ".env")
 DATA_DIR     = APP_DIR / "data"
 HISTORY_DIR  = DATA_DIR / "history"
 EVOLUTION_DIR = DATA_DIR / "evolution"
+KNOWLEDGE_DIR = APP_DIR / "knowledge"
 DATA_DIR.mkdir(exist_ok=True)
 HISTORY_DIR.mkdir(exist_ok=True)
 EVOLUTION_DIR.mkdir(exist_ok=True)
+KNOWLEDGE_DIR.mkdir(exist_ok=True)
+
+# ── 知识库系统 ──────────────────────────────────────────────────────────────────
+
+class KnowledgeBase:
+    """
+    轻量知识库 — 放文件到 knowledge/ 文件夹，军师自动检索引用。
+    支持 .txt / .md / .docx，按段落分块，关键词匹配检索。
+    """
+
+    def __init__(self, knowledge_dir: str):
+        self.knowledge_dir = Path(knowledge_dir)
+        self.chunks = []  # [{"source": 文件名, "text": 段落内容, "keywords": set}]
+        self._loaded_files = set()
+        self.load_all()
+
+    def load_all(self):
+        """扫描知识库目录，加载所有支持的文件"""
+        if not self.knowledge_dir.exists():
+            return
+
+        for ext in ["*.txt", "*.md", "*.docx"]:
+            for fpath in self.knowledge_dir.glob(ext):
+                if fpath.name in self._loaded_files:
+                    continue
+                try:
+                    text = self._read_file(fpath)
+                    if text:
+                        self._chunk_and_index(fpath.name, text)
+                        self._loaded_files.add(fpath.name)
+                except Exception as e:
+                    logger_kb = __import__("logging").getLogger("knowledge")
+                    logger_kb.warning(f"知识库加载失败 {fpath.name}: {e}")
+
+    def _read_file(self, fpath: Path) -> str:
+        """读取各种格式的文件"""
+        suffix = fpath.suffix.lower()
+        if suffix == ".docx":
+            doc = Document(str(fpath))
+            return "\n".join(p.text.strip() for p in doc.paragraphs if p.text.strip())
+        elif suffix in (".txt", ".md"):
+            # 尝试多种编码
+            for enc in ["utf-8", "gbk", "gb2312", "utf-16"]:
+                try:
+                    return fpath.read_text(encoding=enc)
+                except (UnicodeDecodeError, UnicodeError):
+                    continue
+            return ""
+        return ""
+
+    def _chunk_and_index(self, source: str, text: str):
+        """将文本分块并建立关键词索引"""
+        # 按段落分块（空行、句号分割）
+        paragraphs = []
+        for block in text.split("\n\n"):
+            block = block.strip()
+            if len(block) > 20:  # 忽略太短的段落
+                paragraphs.append(block)
+
+        # 如果段落太少，按句子分
+        if len(paragraphs) < 3:
+            sentences = text.replace("。", "。\n").replace("！", "！\n").replace(
+                "？", "？\n").replace(". ", ".\n").split("\n")
+            # 合并相邻短句为一个chunk
+            chunk = ""
+            for s in sentences:
+                s = s.strip()
+                if not s:
+                    continue
+                chunk += s + " "
+                if len(chunk) > 150:
+                    paragraphs.append(chunk.strip())
+                    chunk = ""
+            if chunk.strip():
+                paragraphs.append(chunk.strip())
+
+        for para in paragraphs:
+            # 提取关键词（中文2-6字词 + 英文单词）
+            import re
+            cn_words = set(re.findall(r'[\u4e00-\u9fff]{2,6}', para))
+            en_words = set(w.lower() for w in re.findall(r'[a-zA-Z]{3,}', para))
+            self.chunks.append({
+                "source": source,
+                "text": para[:500],  # 单块最长500字
+                "keywords": cn_words | en_words,
+            })
+
+    def search(self, query: str, top_k: int = 3) -> list:
+        """根据用户消息检索最相关的知识块"""
+        if not self.chunks:
+            return []
+
+        import re
+        q_cn = set(re.findall(r'[\u4e00-\u9fff]{2,6}', query))
+        q_en = set(w.lower() for w in re.findall(r'[a-zA-Z]{3,}', query))
+        q_words = q_cn | q_en
+
+        if not q_words:
+            return []
+
+        scored = []
+        for chunk in self.chunks:
+            # 关键词重叠度
+            overlap = len(q_words & chunk["keywords"])
+            if overlap > 0:
+                # 加权：短query命中率更高更相关
+                score = overlap / max(len(q_words), 1)
+                scored.append((score, chunk))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [item[1] for item in scored[:top_k]]
+
+    def get_knowledge_prompt(self, query: str) -> str:
+        """生成注入 system prompt 的知识库上下文"""
+        results = self.search(query)
+        if not results:
+            return ""
+
+        lines = ["\n## 知识库参考（来自你的文档库）"]
+        for r in results:
+            source = r["source"]
+            text = r["text"][:300]
+            lines.append(f"\n[来源: {source}]\n{text}")
+        lines.append("\n注意：以上内容来自用户的知识库文档，可作为分析依据引用。")
+        return "\n".join(lines)
+
+    def get_status(self) -> str:
+        """知识库状态信息"""
+        if not self._loaded_files:
+            return "[知识库] 空 — 把 .txt/.md/.docx 文件放到 knowledge/ 文件夹即可"
+        return f"[知识库] {len(self._loaded_files)}个文件 | {len(self.chunks)}个知识块已索引"
+
 
 # ── ICI 文档读取 ──────────────────────────────────────────────────────────────
 
 def read_ici(path: str) -> str:
+    """读取ICI文件，支持.docx和.txt"""
+    p = Path(path)
+    if p.suffix.lower() == ".txt":
+        for enc in ["utf-8", "gbk", "gb2312"]:
+            try:
+                return p.read_text(encoding=enc)
+            except (UnicodeDecodeError, UnicodeError):
+                continue
+        return ""
+    if p.suffix.lower() == ".md":
+        for enc in ["utf-8", "gbk"]:
+            try:
+                return p.read_text(encoding=enc)
+            except (UnicodeDecodeError, UnicodeError):
+                continue
+        return ""
     doc = Document(path)
     lines = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
     return "\n".join(lines)
@@ -214,11 +363,14 @@ SYSTEM_HEADER = """你是这份ICI文件主人的专属认知军师——TaijiOS
 
 def _build_injections(crystal_rules, hexagram_prompt, cognitive_prompt,
                       shared_prompt, experience_summary,
-                      intent_prompt: str = "") -> str:
-    """统一构建注入内容（卦象+认知+结晶+共享+经验+意图），只写一次"""
+                      intent_prompt: str = "",
+                      knowledge_prompt: str = "") -> str:
+    """统一构建注入内容（意图+知识库+卦象+认知+结晶+共享+经验），只写一次"""
     parts = []
     if intent_prompt:
         parts.append(intent_prompt)
+    if knowledge_prompt:
+        parts.append(knowledge_prompt)
     if hexagram_prompt:
         parts.append(hexagram_prompt)
     if cognitive_prompt:
@@ -338,11 +490,13 @@ def build_system(ici_text: str, crystal_rules: list = None,
                  hexagram_prompt: str = "",
                  cognitive_prompt: str = "",
                  shared_prompt: str = "",
-                 intent_prompt: str = "") -> str:
+                 intent_prompt: str = "",
+                 knowledge_prompt: str = "") -> str:
     """完整ICI档案模式的system prompt"""
     inject = _build_injections(crystal_rules, hexagram_prompt,
                                cognitive_prompt, shared_prompt,
-                               experience_summary, intent_prompt)
+                               experience_summary, intent_prompt,
+                               knowledge_prompt)
     return SYSTEM_HEADER + inject + "\n以下是完整ICI档案：\n" + ici_text
 
 
@@ -351,11 +505,13 @@ def build_quick_system(ici_text: str, crystal_rules: list = None,
                        hexagram_prompt: str = "",
                        cognitive_prompt: str = "",
                        shared_prompt: str = "",
-                       intent_prompt: str = "") -> str:
+                       intent_prompt: str = "",
+                       knowledge_prompt: str = "") -> str:
     """快速档案模式的system prompt"""
     inject = _build_injections(crystal_rules, hexagram_prompt,
                                cognitive_prompt, shared_prompt,
-                               experience_summary, intent_prompt)
+                               experience_summary, intent_prompt,
+                               knowledge_prompt)
     return QUICK_SYSTEM_HEADER + ici_text + inject
 
 # ── 历史记录 ──────────────────────────────────────────────────────────────────
@@ -737,19 +893,24 @@ def find_ici_file():
         if Path(p).exists():
             return p, None, False
 
-    # 2. 同目录docx
-    docx_files = list(APP_DIR.glob("*.docx"))
-    if len(docx_files) == 1:
-        print(f"\n自动找到ICI文件：{docx_files[0].name}")
-        return str(docx_files[0]), None, False
-    elif len(docx_files) > 1:
-        print(f"\n找到 {len(docx_files)} 个docx文件：")
-        for i, f in enumerate(docx_files, 1):
+    # 2. 同目录文档（支持 .docx / .txt / .md）
+    ici_files = []
+    for ext in ["*.docx", "*.txt", "*.md"]:
+        for f in APP_DIR.glob(ext):
+            # 排除知识库目录和数据文件
+            if f.parent == APP_DIR and f.name not in ("requirements.txt", "README.md", "ARCHITECTURE.md"):
+                ici_files.append(f)
+    if len(ici_files) == 1:
+        print(f"\n自动找到ICI文件：{ici_files[0].name}")
+        return str(ici_files[0]), None, False
+    elif len(ici_files) > 1:
+        print(f"\n找到 {len(ici_files)} 个档案文件：")
+        for i, f in enumerate(ici_files, 1):
             print(f"  {i}. {f.name}")
         while True:
-            choice = input(f"\n输入编号（1-{len(docx_files)}）：").strip()
-            if choice.isdigit() and 1 <= int(choice) <= len(docx_files):
-                return str(docx_files[int(choice) - 1]), None, False
+            choice = input(f"\n输入编号（1-{len(ici_files)}）：").strip()
+            if choice.isdigit() and 1 <= int(choice) <= len(ici_files):
+                return str(ici_files[int(choice) - 1]), None, False
             print("输入有误，请重新选择")
 
     # 3. 已有快速档案
@@ -765,7 +926,7 @@ def find_ici_file():
     print()
     print("  要了解你，我需要一些基本信息：")
     print("  1. 快速问答 → 7个问题，30秒搞定（推荐）")
-    print("  2. 导入档案 → 如果你有ICI文件(.docx)")
+    print("  2. 导入档案 → 如果你有ICI文件(.docx/.txt/.md)")
     print("━" * 50)
 
     while True:
@@ -779,7 +940,7 @@ def find_ici_file():
             return None, profile_text, True
 
         elif choice == "2":
-            print("\n把.docx文件拖到这个窗口，按回车：\n")
+            print("\n把文件拖到这个窗口，按回车（支持.docx/.txt/.md）：\n")
             while True:
                 try:
                     ici_path = input("拖入文件 → ").strip().strip('"')
@@ -788,8 +949,9 @@ def find_ici_file():
                 if not ici_path:
                     print("请拖入文件")
                     continue
-                if not ici_path.lower().endswith(".docx"):
-                    print("这不是.docx文件！需要后缀是.docx的ICI文件")
+                supported = (".docx", ".txt", ".md")
+                if not any(ici_path.lower().endswith(ext) for ext in supported):
+                    print(f"不支持的格式！支持：{', '.join(supported)}")
                     continue
                 if Path(ici_path).exists():
                     return ici_path, None, False
@@ -816,6 +978,7 @@ def main():
     premium = PremiumManager(str(EVOLUTION_DIR))
     contribution = ContributionSystem(str(EVOLUTION_DIR))
     ecosystem = EcosystemManager(str(EVOLUTION_DIR))
+    knowledge = KnowledgeBase(str(KNOWLEDGE_DIR))
 
     # 每日签到
     daily_bonus = contribution.check_daily_bonus()
@@ -850,13 +1013,16 @@ def main():
     level_name = contribution.level[0]
     print(f"\n  [{premium_tag}] {model_name} | {level_name} | {contribution.total_points}积分")
     print(f"  {crystal_count}条结晶 | {shared_count}条共享经验")
+    kb_status = knowledge.get_status()
+    if knowledge.chunks:
+        print(f"  {kb_status}")
     if stats_display:
         print(f"  {stats_display}")
 
     # 找ICI文件
     ici_path, quick_text, is_quick = find_ici_file()
 
-    def rebuild_system(intent_prompt: str = ""):
+    def rebuild_system(intent_prompt: str = "", knowledge_prompt: str = ""):
         """重建system prompt（统一入口，每轮调用）"""
         cr = crystallizer.get_active_rules()
         es = learner.get_experience_summary()
@@ -864,9 +1030,11 @@ def main():
         cp = cognitive_map.get_map_summary()
         sp = experience_pool.get_shared_prompt()
         if is_quick:
-            return build_quick_system(ici_text, cr, es, hp, cp, sp, intent_prompt)
+            return build_quick_system(ici_text, cr, es, hp, cp, sp,
+                                       intent_prompt, knowledge_prompt)
         else:
-            return build_system(ici_text, cr, es, hp, cp, sp, intent_prompt)
+            return build_system(ici_text, cr, es, hp, cp, sp,
+                                 intent_prompt, knowledge_prompt)
 
     if is_quick:
         # 快速档案模式
@@ -1008,6 +1176,11 @@ def main():
   模型管理：
     model       查看/切换AI模型
 
+  知识库：
+    kb          查看知识库状态
+    kb reload   重新扫描知识库文件
+    （把.txt/.md/.docx放到 knowledge/ 文件夹即可）
+
   进化系统：
     export      导出你的经验（发给其他Agent）
     import      导入别人的经验
@@ -1022,6 +1195,25 @@ def main():
     reset       重建个人档案
     invite      查看邀请码（Premium）
 {'━' * 45}""")
+            continue
+
+        if user_input.lower().startswith("kb"):
+            parts = user_input.lower().split()
+            if len(parts) > 1 and parts[1] == "reload":
+                knowledge.chunks = []
+                knowledge._loaded_files = set()
+                knowledge.load_all()
+                print(f"\n  {knowledge.get_status()}")
+            else:
+                print(f"\n  {knowledge.get_status()}")
+                if knowledge.chunks:
+                    sources = {}
+                    for c in knowledge.chunks:
+                        sources[c["source"]] = sources.get(c["source"], 0) + 1
+                    for src, cnt in sources.items():
+                        print(f"    {src}: {cnt}个知识块")
+                print(f"\n  知识库目录: {KNOWLEDGE_DIR}")
+                print(f"  支持格式: .txt / .md / .docx")
             continue
 
         if user_input.lower() in ("clear", "清空"):
@@ -1374,8 +1566,13 @@ def main():
             intent_tag = intent_prompt.split("：")[1].split("】")[0] if "：" in intent_prompt else "分析"
             print(f"\n  [触发] 军师进入{intent_tag}...")
 
-        # 重建system prompt（每轮更新，注入最新卦象+认知+意图）
-        system = rebuild_system(intent_prompt)
+        # 知识库检索
+        knowledge_prompt = knowledge.get_knowledge_prompt(user_input)
+        if knowledge_prompt:
+            print(f"  [知识库] 找到相关参考资料")
+
+        # 重建system prompt（每轮更新，注入最新卦象+认知+意图+知识）
+        system = rebuild_system(intent_prompt, knowledge_prompt)
 
         print("\nAI：", end="", flush=True)
         try:
@@ -1415,6 +1612,11 @@ def main():
 
         max_history = premium.limits["max_history"]
         if len(history) > max_history:
+            # 压缩前先提取老对话的要点，注入认知地图
+            old_msgs = history[:len(history) - max_history]
+            old_user_msgs = [m["content"] for m in old_msgs if m["role"] == "user"]
+            for om in old_user_msgs:
+                cognitive_map.extract_from_message(om, "")
             history = history[-max_history:]
 
         save_history(history_key, history)
