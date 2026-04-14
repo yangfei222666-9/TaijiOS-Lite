@@ -16,7 +16,7 @@ TaijiOS Lite — 带自进化的ICI认知AI
 用法：把ICI文件(.docx)放在同一个文件夹，双击运行
 """
 
-VERSION = "1.3.1"
+VERSION = "1.3.2"
 
 import sys
 import os
