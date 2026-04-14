@@ -16,7 +16,7 @@ TaijiOS Lite — 带自进化的ICI认知AI
 用法：把ICI文件(.docx)放在同一个文件夹，双击运行
 """
 
-VERSION = "1.3.2"
+VERSION = "1.4.0"
 
 import sys
 import os
@@ -213,9 +213,12 @@ SYSTEM_HEADER = """你是这份ICI文件主人的专属认知军师——TaijiOS
 """
 
 def _build_injections(crystal_rules, hexagram_prompt, cognitive_prompt,
-                      shared_prompt, experience_summary) -> str:
-    """统一构建注入内容（卦象+认知+结晶+共享+经验），只写一次"""
+                      shared_prompt, experience_summary,
+                      intent_prompt: str = "") -> str:
+    """统一构建注入内容（卦象+认知+结晶+共享+经验+意图），只写一次"""
     parts = []
+    if intent_prompt:
+        parts.append(intent_prompt)
     if hexagram_prompt:
         parts.append(hexagram_prompt)
     if cognitive_prompt:
@@ -233,15 +236,113 @@ def _build_injections(crystal_rules, hexagram_prompt, cognitive_prompt,
     return "\n".join(parts)
 
 
+# ── 意图检测 + 主动执行 ────────────────────────────────────────────────────────
+
+INTENT_TRIGGERS = {
+    "分析比赛": {
+        "keywords": ["比赛", "赛事", "对局", "联赛", "世界杯", "欧冠", "NBA", "CBA",
+                     "英超", "西甲", "德甲", "意甲", "法甲", "冠军", "决赛", "半决赛",
+                     "淘汰赛", "小组赛", "积分榜", "排名", "胜负", "比分", "主场", "客场",
+                     "足球", "篮球", "电竞", "LOL", "DOTA", "CS"],
+        "prompt": """
+## 【主动执行：赛事深度分析模式】
+用户提到了比赛/赛事，立刻进入分析模式：
+1. 先判断用户说的是什么比赛（足球/篮球/电竞/其他）
+2. 直接给出分析：双方实力对比、关键因素、胜负预判
+3. 用军师风格：像分析战场局势一样分析比赛
+4. 给出明确的预判结论，不要含糊——军师不说"两边都有可能"
+5. 如果信息不够，先给初步判断，再追问关键信息
+""",
+    },
+    "分析对手": {
+        "keywords": ["对手", "竞品", "竞争", "对标", "友商", "同行"],
+        "prompt": """
+## 【主动执行：竞争分析模式】
+用户提到了竞争对手/竞品，立刻进入分析：
+1. 对手的核心优势和致命弱点
+2. 用户相对于对手的差异化定位
+3. 可执行的竞争策略（不要说"差异化竞争"这种废话，要具体）
+4. 军师风格：像分析敌军一样，找出可以攻击的软肋
+""",
+    },
+    "分析人": {
+        "keywords": ["这个人", "他是什么人", "怎么看他", "能不能信", "靠不靠谱",
+                     "合伙人", "投资人", "老板", "领导", "同事"],
+        "prompt": """
+## 【主动执行：人物分析模式】
+用户在问关于某个人的判断，立刻进入分析：
+1. 从用户描述中提取此人的行为模式
+2. 判断此人的动机和利益诉求
+3. 给出明确的信任评级和合作建议
+4. 军师风格：识人之术，看穿表面，直说风险
+""",
+    },
+    "做决定": {
+        "keywords": ["要不要", "该不该", "选哪个", "怎么选", "纠结", "两难",
+                     "到底", "应该", "做决定", "选择"],
+        "prompt": """
+## 【主动执行：决策分析模式】
+用户在做选择题，立刻帮他决断：
+1. 列出每个选项的关键利弊（最多3条，不要废话）
+2. 直接给结论：选哪个，为什么
+3. 给出选了之后的第一步行动
+4. 军师风格：替主公做判断，不是列清单让他自己选
+""",
+    },
+    "赚钱": {
+        "keywords": ["赚钱", "变现", "商业模式", "怎么收费", "盈利", "营收",
+                     "付费", "定价", "客单价", "转化率", "第一桶金", "挣钱",
+                     "收入", "怎么卖", "卖给谁"],
+        "prompt": """
+## 【主动执行：商业分析模式】
+用户在想怎么赚钱，立刻进入商业军师模式：
+1. 基于用户的资源和能力，给出最短路径的变现方案
+2. 具体到：卖什么、卖给谁、怎么卖、定多少钱
+3. 先给一个"本周就能开始"的方案，再给长期方案
+4. 军师风格：不画大饼，只说能落地的
+""",
+    },
+    "情绪低落": {
+        "keywords": ["焦虑", "失眠", "崩溃", "不想干了", "放弃", "太累",
+                     "没意义", "迷茫", "绝望", "痛苦", "撑不住"],
+        "prompt": """
+## 【主动执行：状态诊断模式】
+用户情绪低落，但军师不做心理咨询师：
+1. 先点破：你不是真的想放弃，你是因为XXX而焦虑
+2. 把情绪问题转化为行动问题：焦虑的本质是什么没做到
+3. 给一个"今天就能做"的最小行动，打破僵局
+4. 军师风格：不安慰，不共情，直接拉回战场
+""",
+    },
+}
+
+
+def detect_intent(user_input: str) -> str:
+    """检测用户消息中的意图，返回对应的 prompt 注入"""
+    matched_prompts = []
+    for intent_name, config in INTENT_TRIGGERS.items():
+        hits = sum(1 for kw in config["keywords"] if kw in user_input)
+        if hits > 0:
+            matched_prompts.append((hits, config["prompt"]))
+
+    if not matched_prompts:
+        return ""
+
+    # 取命中最多关键词的意图
+    matched_prompts.sort(key=lambda x: x[0], reverse=True)
+    return matched_prompts[0][1]
+
+
 def build_system(ici_text: str, crystal_rules: list = None,
                  experience_summary: str = "",
                  hexagram_prompt: str = "",
                  cognitive_prompt: str = "",
-                 shared_prompt: str = "") -> str:
+                 shared_prompt: str = "",
+                 intent_prompt: str = "") -> str:
     """完整ICI档案模式的system prompt"""
     inject = _build_injections(crystal_rules, hexagram_prompt,
                                cognitive_prompt, shared_prompt,
-                               experience_summary)
+                               experience_summary, intent_prompt)
     return SYSTEM_HEADER + inject + "\n以下是完整ICI档案：\n" + ici_text
 
 
@@ -249,11 +350,12 @@ def build_quick_system(ici_text: str, crystal_rules: list = None,
                        experience_summary: str = "",
                        hexagram_prompt: str = "",
                        cognitive_prompt: str = "",
-                       shared_prompt: str = "") -> str:
+                       shared_prompt: str = "",
+                       intent_prompt: str = "") -> str:
     """快速档案模式的system prompt"""
     inject = _build_injections(crystal_rules, hexagram_prompt,
                                cognitive_prompt, shared_prompt,
-                               experience_summary)
+                               experience_summary, intent_prompt)
     return QUICK_SYSTEM_HEADER + ici_text + inject
 
 # ── 历史记录 ──────────────────────────────────────────────────────────────────
@@ -754,7 +856,7 @@ def main():
     # 找ICI文件
     ici_path, quick_text, is_quick = find_ici_file()
 
-    def rebuild_system():
+    def rebuild_system(intent_prompt: str = ""):
         """重建system prompt（统一入口，每轮调用）"""
         cr = crystallizer.get_active_rules()
         es = learner.get_experience_summary()
@@ -762,9 +864,9 @@ def main():
         cp = cognitive_map.get_map_summary()
         sp = experience_pool.get_shared_prompt()
         if is_quick:
-            return build_quick_system(ici_text, cr, es, hp, cp, sp)
+            return build_quick_system(ici_text, cr, es, hp, cp, sp, intent_prompt)
         else:
-            return build_system(ici_text, cr, es, hp, cp, sp)
+            return build_system(ici_text, cr, es, hp, cp, sp, intent_prompt)
 
     if is_quick:
         # 快速档案模式
@@ -788,16 +890,61 @@ def main():
 
     history = load_history(history_key)
 
+    # 从历史中恢复prev状态（让记忆连续）
+    prev_user_input = ""
+    prev_reply = ""
+    if history and len(history) >= 2:
+        # 恢复最后一轮的user和assistant
+        for msg in reversed(history):
+            if msg["role"] == "assistant" and not prev_reply:
+                prev_reply = msg["content"]
+            elif msg["role"] == "user" and not prev_user_input:
+                prev_user_input = msg["content"]
+            if prev_user_input and prev_reply:
+                break
+
     if history:
-        print(f"\n  欢迎回来，上次聊了{len(history)//2}轮，我都记得。")
+        rounds = len(history) // 2
+        # 提取用户名字
+        user_name = ""
+        if is_quick and quick_text:
+            for line in quick_text.split("\n"):
+                if "姓名" in line and "：" in line:
+                    user_name = line.split("：", 1)[1].strip()
+                    break
+        elif not is_quick and ici_text:
+            for line in ici_text.split("\n")[:10]:
+                if "姓名" in line and "：" in line:
+                    user_name = line.split("：", 1)[1].strip()
+                    break
+
+        welcome = f"\n  欢迎回来"
+        if user_name:
+            welcome += f"，{user_name}"
+        welcome += f"！上次聊了{rounds}轮，我都记得。"
+        print(welcome)
+
+        # 显示记忆摘要
+        crystal_rules = crystallizer.get_active_rules()
+        cog_summary = cognitive_map.get_map_summary()
+        hex_strat = hexagram_engine.get_strategy_prompt()
+
+        if crystal_rules:
+            print(f"  我记住了{len(crystal_rules)}条关于你的经验规律")
+        if cog_summary:
+            filled_dims = sum(1 for d in ["位置", "本事", "钱财", "野心", "口碑"]
+                            if cognitive_map.map.get(d))
+            if filled_dims > 0:
+                print(f"  你的认知地图已积累{filled_dims}/5个维度")
+        if hexagram_engine.current_hexagram != "乾":
+            strat = hexagram_engine.get_strategy_prompt().split("风格定位：")
+            if len(strat) > 1:
+                print(f"  上次状态：{strat[1].strip()[:40]}")
     else:
         print("\n  军师就位，随时听候主公差遣。")
 
     print("\n  输入 help 查看所有命令\n")
     print("━" * 55)
-
-    prev_user_input = ""
-    prev_reply = ""
 
     # 新对话自动打招呼
     if not history:
@@ -813,6 +960,26 @@ def main():
             prev_reply = greeting
         except Exception:
             print("你好，我是你的认知军师。有什么要聊的，直接说。")
+    else:
+        # 老用户回来，军师主动打招呼（基于记忆）
+        print("\nAI：", end="", flush=True)
+        try:
+            recall_prompt = (
+                "用户回来了，这不是第一次对话。"
+                f"你们之前已经聊了{len(history)//2}轮。"
+                "根据你记忆中的对话历史和用户档案，"
+                "用一句话总结上次聊到哪了，"
+                "然后问一个跟进问题或给出你一直想说的判断。"
+                "不要说'欢迎回来'，直接进正题。"
+            )
+            greeting = chat(system, history, recall_prompt, model_config)
+            print(greeting)
+            history.append({"role": "user", "content": "我回来了"})
+            history.append({"role": "assistant", "content": greeting})
+            save_history(history_key, history)
+            prev_reply = greeting
+        except Exception:
+            print("继续上次的话题吧，你想聊什么？")
 
     while True:
         try:
@@ -1201,8 +1368,14 @@ def main():
         # 先用空reply，等AI回复后再提取完整的
         cognitive_map.extract_from_message(user_input, "")
 
-        # 重建system prompt（每轮更新，注入最新卦象+认知）
-        system = rebuild_system()
+        # 意图检测 → 主动执行模式
+        intent_prompt = detect_intent(user_input)
+        if intent_prompt:
+            intent_tag = intent_prompt.split("：")[1].split("】")[0] if "：" in intent_prompt else "分析"
+            print(f"\n  [触发] 军师进入{intent_tag}...")
+
+        # 重建system prompt（每轮更新，注入最新卦象+认知+意图）
+        system = rebuild_system(intent_prompt)
 
         print("\nAI：", end="", flush=True)
         try:
