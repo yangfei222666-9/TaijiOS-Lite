@@ -1,3 +1,15 @@
+# Lite prototype · 主仓在这里
+
+> This repository is a TaijiOS Lite prototype and example pack.
+>
+> Current main repository: [yangfei222666-9/taiji](https://github.com/yangfei222666-9/taiji)
+>
+> Live HUD demo: [taijios-hud.netlify.app](https://taijios-hud.netlify.app)
+
+This repo remains online as a lightweight prototype. Reusable ideas should be moved into the main repo as examples before this repo is archived.
+
+---
+
 # TaijiOS Lite v1.4.0
 
 ## 全球第一个带自进化能力的AI认知军师操作系统
